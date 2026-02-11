@@ -1,0 +1,38 @@
+{
+  "name": "clanker-wallet",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": ["dist", "README.md", "LICENSE"],
+  "license": "MIT",
+  "author": "Clanker Wallet Contributors",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/almogdepaz/ClankerWallet.git",
+    "directory": "sdk"
+  },
+  "homepage": "https://github.com/almogdepaz/ClankerWallet/tree/main/sdk#readme",
+  "keywords": ["wallet", "ai-agent", "ethereum", "e2e-encrypted", "transaction-approval"],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "tsc --watch",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "tweetnacl": "^1.0.3"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.8",
+    "typescript": "^5.4.0",
+    "vitest": "^2.1.0"
+  }
+}
