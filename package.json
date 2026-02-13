@@ -15,10 +15,9 @@
   "author": "Clanker Wallet Contributors",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/almogdepaz/ClankerWallet.git",
-    "directory": "sdk"
+    "url": "git+https://github.com/almogdepaz/clanker-wallet.git"
   },
-  "homepage": "https://github.com/almogdepaz/ClankerWallet/tree/main/sdk#readme",
+  "homepage": "https://github.com/almogdepaz/clanker-wallet#readme",
   "keywords": ["wallet", "ai-agent", "ethereum", "e2e-encrypted", "transaction-approval"],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
