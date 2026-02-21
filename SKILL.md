@@ -23,7 +23,7 @@ Before you can send transactions, you must pair with the human. Ask them:
 
 The human will give you a JSON string like:
 ```json
-{"version":1,"pubkey":"ab12cd...","relay":"wss://clanker-relay.fly.dev/ws","wallet":"0x..."}
+{"version":1,"pubkey":"ab12cd...","relay":"wss://clanker-wallet-relay-625052130878.us-east1.run.app/ws","wallet":"0x..."}
 ```
 
 Save this pairing JSON — you'll need it every session.
