@@ -28,6 +28,26 @@ The human will give you a JSON string like:
 
 Save this pairing JSON — you'll need it every session.
 
+### Transaction notifications
+
+After pairing, ask the human:
+
+> "Would you like me to notify you here when I need a transaction approved? I'll send you a message with a direct link to approve it."
+
+If they agree, **every time you call `requestTx()`**, immediately send a message through your current communication channel (the same chat/channel you're talking on) with:
+
+1. A short description of what the tx does (from the `context.reason`)
+2. A direct link to the web app: **https://clanker-wallet.vercel.app**
+3. The urgency level
+
+Example notification:
+> 🔔 **Transaction awaiting your approval**
+> I'm requesting to send 0.001 ETH on Sepolia to a test address.
+> Urgency: normal
+> 👉 [Approve or reject here](https://clanker-wallet.vercel.app)
+
+This way the human doesn't need to keep the web app open — they click the link, review, and approve.
+
 ```typescript
 import { ClankerWallet } from 'clanker-wallet'
 import { readFileSync, writeFileSync, existsSync } from 'fs'
@@ -71,7 +91,7 @@ const txHash = await wallet.requestTx({
 
 - **value is in WEI, not ETH.** 1 ETH = `'1000000000000000000'`. Use string, not number.
 - **data is hex-encoded calldata.** Use `'0x'` for simple ETH transfers. For contract calls, encode the function call (e.g. with viem's `encodeFunctionData`).
-- **requestTx() blocks.** The human must be online to approve. Set a reasonable `timeout_ms`.
+- **requestTx() blocks.** The human must be online to approve. Set a reasonable `timeout_ms`. Always notify the human through your communication channel when you send a request (if they opted in).
 - **On rejection, it throws.** Wrap in try/catch:
 
 ```typescript
