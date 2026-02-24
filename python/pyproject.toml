@@ -1,0 +1,54 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "clanker-wallet"
+version = "0.1.0"
+description = "Python SDK for Clanker Wallet — E2E encrypted transaction approval for AI agents"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+keywords = ["wallet", "crypto", "ai", "agent", "e2e", "encryption", "ethereum", "web3"]
+authors = [
+    { name = "Clanker Wallet Contributors" },
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security :: Cryptography",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+    "Framework :: AsyncIO",
+]
+dependencies = [
+    "PyNaCl>=1.5.0",
+    "websockets>=12.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "mypy>=1.8",
+]
+
+[project.urls]
+Homepage = "https://clanker-wallet.xyz"
+Repository = "https://github.com/almogdepaz/clanker-wallet/tree/main/python"
+Issues = "https://github.com/almogdepaz/clanker-wallet/issues"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_return_any = true
+warn_unused_configs = true

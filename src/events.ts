@@ -14,12 +14,12 @@ export class TypedEmitter {
   private _listeners = new Map<keyof EventMap, Set<Handler<any>>>()
 
   on<K extends keyof EventMap>(event: K, handler: Handler<EventMap[K]>): this {
-    let set = this._listeners.get(event)
-    if (!set) {
-      set = new Set()
-      this._listeners.set(event, set)
+    const existing = this._listeners.get(event)
+    if (existing) {
+      existing.add(handler)
+    } else {
+      this._listeners.set(event, new Set([handler]))
     }
-    set.add(handler)
     return this
   }
 

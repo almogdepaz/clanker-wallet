@@ -1,6 +1,6 @@
-import { encryptMessage, decryptMessage, toHex, fromHex, generateKeypair, keypairFromSecret, signingKeypairFromSeed, signMessage } from './crypto.js'
+import { decryptMessage, encryptMessage, fromHex, generateKeypair, keypairFromSecret, signMessage, signingKeypairFromSeed, toHex } from './crypto.js'
 import { TypedEmitter } from './events.js'
-import type { PairingData, RequestTxOptions, TxRequest, TxResponse, AgentEnvelope } from './types.js'
+import type { AgentEnvelope, PairingData, RequestTxOptions, TxRequest, TxResponse } from './types.js'
 
 const DEFAULT_TIMEOUT_MS = 3_600_000 // 1 hour
 
@@ -11,6 +11,14 @@ export interface ClankerWalletOptions {
   secretKey?: Uint8Array
 }
 
+/** pairing state set by pair(), consumed by requestTx() */
+interface PairingState {
+  humanPubkey: Uint8Array
+  humanPubkeyHex: string
+  relayUrl: string
+  humanWallet: string | null
+}
+
 export class ClankerWallet extends TypedEmitter {
   readonly publicKey: Uint8Array
   readonly secretKey: Uint8Array
@@ -18,11 +26,10 @@ export class ClankerWallet extends TypedEmitter {
   /** Ed25519 public key for signing TxRequests */
   readonly signingPublicKey: Uint8Array
   private readonly signingSecretKey: Uint8Array
+  private readonly agentPubkeyHex: string
+  private readonly signingPubkeyHex: string
 
-  private humanPubkey: Uint8Array | null = null
-  private humanPubkeyHex: string | null = null
-  private relayUrl: string | null = null
-  private humanWallet: string | null = null
+  private pairing: PairingState | null = null
 
   constructor(options: ClankerWalletOptions = {}) {
     super()
@@ -33,16 +40,17 @@ export class ClankerWallet extends TypedEmitter {
     this.publicKey = kp.publicKey
     this.secretKey = kp.secretKey
     this.agentId = `agent_${toHex(kp.publicKey).slice(0, 12)}`
+    this.agentPubkeyHex = toHex(kp.publicKey)
 
-    // derive Ed25519 signing keypair from the x25519 secret key (first 32 bytes = seed)
     const signingKp = signingKeypairFromSeed(kp.secretKey)
     this.signingPublicKey = signingKp.publicKey
     this.signingSecretKey = signingKp.secretKey
+    this.signingPubkeyHex = toHex(signingKp.publicKey)
   }
 
   /** whether this agent has been paired with a human */
   get paired(): boolean {
-    return this.humanPubkey !== null
+    return this.pairing !== null
   }
 
   /** parse QR/pairing data and store the human's pubkey + relay url */
@@ -56,10 +64,12 @@ export class ClankerWallet extends TypedEmitter {
       throw new Error('invalid pairing data: missing pubkey or relay')
     }
 
-    this.humanPubkey = fromHex(data.pubkey)
-    this.humanPubkeyHex = data.pubkey
-    this.relayUrl = data.relay
-    this.humanWallet = data.wallet || null
+    this.pairing = {
+      humanPubkey: fromHex(data.pubkey),
+      humanPubkeyHex: data.pubkey,
+      relayUrl: data.relay,
+      humanWallet: data.wallet || null,
+    }
 
     this.emit('paired', { relay: data.relay, wallet: data.wallet || '' })
 
@@ -72,10 +82,11 @@ export class ClankerWallet extends TypedEmitter {
    * throws on rejection, timeout, or connection error.
    */
   async requestTx(options: RequestTxOptions): Promise<string> {
-    if (!this.humanPubkey || !this.humanPubkeyHex || !this.relayUrl) {
+    if (!this.pairing) {
       throw new Error('not paired — call pair() first')
     }
 
+    const { humanPubkey, humanPubkeyHex, relayUrl } = this.pairing
     const timeoutMs = options.timeout_ms ?? DEFAULT_TIMEOUT_MS
     const requestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
 
@@ -89,23 +100,14 @@ export class ClankerWallet extends TypedEmitter {
       signature: '', // set below after signing
     }
 
-    // sign the request (signature field empty during signing, then filled)
-    const sigPayload = JSON.stringify(txRequest)
-    txRequest.signature = signMessage(sigPayload, this.signingSecretKey)
-
-    const humanPubkey = this.humanPubkey
-    const humanPubkeyHex = this.humanPubkeyHex
-    const relayUrl = this.relayUrl
-    const secretKey = this.secretKey
-    const agentPubkeyHex = toHex(this.publicKey)
-    const signingPubkeyHex = toHex(this.signingPublicKey)
+    txRequest.signature = signMessage(JSON.stringify(txRequest), this.signingSecretKey)
 
     return new Promise<string>((resolve, reject) => {
       let ws: WebSocket
       let timer: ReturnType<typeof setTimeout>
       let settled = false
 
-      const cleanup = () => {
+      const cleanup = (): void => {
         settled = true
         clearTimeout(timer)
         if (ws && ws.readyState <= WebSocket.OPEN) {
@@ -113,11 +115,15 @@ export class ClankerWallet extends TypedEmitter {
         }
       }
 
+      const fail = (message: string): void => {
+        cleanup()
+        this.emit('error', { message })
+        reject(new Error(message))
+      }
+
       timer = setTimeout(() => {
         if (!settled) {
-          cleanup()
-          this.emit('error', { message: `request ${requestId} timed out after ${timeoutMs}ms` })
-          reject(new Error(`request ${requestId} timed out after ${timeoutMs}ms`))
+          fail(`request ${requestId} timed out after ${timeoutMs}ms`)
         }
       }, timeoutMs)
 
@@ -126,18 +132,12 @@ export class ClankerWallet extends TypedEmitter {
       try {
         ws = new WebSocket(relayUrl)
       } catch (err) {
-        cleanup()
-        this.emit('error', { message: `failed to connect to relay: ${err}` })
-        reject(new Error(`failed to connect to relay: ${err}`))
+        fail(`failed to connect to relay: ${err}`)
         return
       }
 
       ws.addEventListener('error', () => {
-        if (!settled) {
-          cleanup()
-          this.emit('error', { message: 'relay connection error' })
-          reject(new Error('relay connection error'))
-        }
+        if (!settled) fail('relay connection error')
       })
 
       ws.addEventListener('close', () => {
@@ -149,29 +149,27 @@ export class ClankerWallet extends TypedEmitter {
       })
 
       ws.addEventListener('open', () => {
-        // join the human's room
         ws.send(JSON.stringify({ type: 'join', room: humanPubkeyHex }))
       })
 
       ws.addEventListener('message', (event) => {
         if (settled) return
 
-        let msg: any
+        let msg: { type: string; payload?: string; message?: string }
         try {
           msg = JSON.parse(event.data as string)
         } catch {
-          return // ignore non-JSON
+          return
         }
 
         if (msg.type === 'joined') {
           this.emit('connected', { room: humanPubkeyHex })
-          // room joined — send the encrypted tx request
-          const plaintext = JSON.stringify(txRequest)
-          const ciphertext = encryptMessage(plaintext, humanPubkey, secretKey)
+
+          const ciphertext = encryptMessage(JSON.stringify(txRequest), humanPubkey, this.secretKey)
           const envelope: AgentEnvelope = {
-            sender_pubkey: agentPubkeyHex,
+            sender_pubkey: this.agentPubkeyHex,
             ciphertext,
-            signing_pubkey: signingPubkeyHex,
+            signing_pubkey: this.signingPubkeyHex,
           }
           ws.send(JSON.stringify({
             type: 'message',
@@ -183,18 +181,17 @@ export class ClankerWallet extends TypedEmitter {
         }
 
         if (msg.type === 'message') {
-          // try to decrypt as TxResponse
           try {
-            const envelope: AgentEnvelope = JSON.parse(msg.payload)
+            const envelope: AgentEnvelope = JSON.parse(msg.payload!)
             const plaintext = decryptMessage(
               envelope.ciphertext,
               fromHex(envelope.sender_pubkey),
-              secretKey,
+              this.secretKey,
             )
-            if (!plaintext) return // not for us or decryption failed
+            if (!plaintext) return
 
             const response: TxResponse = JSON.parse(plaintext)
-            if (response.request_id !== requestId) return // not our response
+            if (response.request_id !== requestId) return
 
             this.emit('response', {
               request_id: response.request_id,
@@ -216,12 +213,11 @@ export class ClankerWallet extends TypedEmitter {
           } catch {
             // ignore messages that aren't valid envelopes
           }
+          return
         }
 
         if (msg.type === 'error') {
-          cleanup()
-          this.emit('error', { message: `relay error: ${msg.message}` })
-          reject(new Error(`relay error: ${msg.message}`))
+          fail(`relay error: ${msg.message}`)
         }
       })
     })

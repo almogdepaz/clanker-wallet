@@ -1,5 +1,8 @@
 import nacl from 'tweetnacl'
 
+const encoder = new TextEncoder()
+const decoder = new TextDecoder()
+
 /** generate a random x25519 keypair for the agent's identity */
 export function generateKeypair(): nacl.BoxKeyPair {
   return nacl.box.keyPair()
@@ -17,8 +20,7 @@ export function encryptMessage(
   senderSecretKey: Uint8Array,
 ): string {
   const nonce = nacl.randomBytes(nacl.box.nonceLength)
-  const encoded = new TextEncoder().encode(message)
-  const ciphertext = nacl.box(encoded, nonce, recipientPublicKey, senderSecretKey)
+  const ciphertext = nacl.box(encoder.encode(message), nonce, recipientPublicKey, senderSecretKey)
   const combined = new Uint8Array(nonce.length + ciphertext.length)
   combined.set(nonce)
   combined.set(ciphertext, nonce.length)
@@ -39,7 +41,7 @@ export function decryptMessage(
   const plaintext = nacl.box.open(ciphertext, nonce, senderPublicKey, recipientSecretKey)
   if (!plaintext) return null
 
-  return new TextDecoder().decode(plaintext)
+  return decoder.decode(plaintext)
 }
 
 /** hex-encode bytes (no 0x prefix) */
@@ -66,8 +68,7 @@ export function signingKeypairFromSeed(seed: Uint8Array): nacl.SignKeyPair {
 
 /** sign a message string with an Ed25519 secret key. returns base64(signature). */
 export function signMessage(message: string, signingSecretKey: Uint8Array): string {
-  const encoded = new TextEncoder().encode(message)
-  const signature = nacl.sign.detached(encoded, signingSecretKey)
+  const signature = nacl.sign.detached(encoder.encode(message), signingSecretKey)
   return bytesToBase64(signature)
 }
 
@@ -77,12 +78,12 @@ export function verifySignature(
   base64Signature: string,
   signingPublicKey: Uint8Array,
 ): boolean {
-  const encoded = new TextEncoder().encode(message)
   const signature = base64ToBytes(base64Signature)
-  return nacl.sign.detached.verify(encoded, signature, signingPublicKey)
+  return nacl.sign.detached.verify(encoder.encode(message), signature, signingPublicKey)
 }
 
-function base64ToBytes(b64: string): Uint8Array {
+/** base64 string → Uint8Array */
+export function base64ToBytes(b64: string): Uint8Array {
   const binary = atob(b64)
   const bytes = new Uint8Array(binary.length)
   for (let i = 0; i < binary.length; i++) {
@@ -91,6 +92,7 @@ function base64ToBytes(b64: string): Uint8Array {
   return bytes
 }
 
+/** Uint8Array → base64 string */
 export function bytesToBase64(bytes: Uint8Array): string {
   let binary = ''
   for (let i = 0; i < bytes.length; i++) {
