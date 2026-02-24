@@ -1,8 +1,7 @@
 ---
 name: clanker-wallet
 description: "Send blockchain transactions through a human-approved wallet. You propose tx, human reviews and signs. No private keys needed."
-homepage: https://clanker-wallet.vercel.app
-metadata: {"clawdbot":{"requires":{"packages":["clanker-wallet"]}}}
+homepage: https://clanker-wallet.xyz
 ---
 
 # Clanker Wallet — Human-Approved Transactions
@@ -12,21 +11,28 @@ You are an AI agent that needs to send blockchain transactions. You do NOT have 
 ## Setup
 
 ```bash
-npm install clanker-wallet
+npm install -g clanker-wallet
 ```
+
+Or use without installing: `npx clanker-wallet` / `bunx clanker-wallet`
 
 ## Pairing (one-time)
 
 Before you can send transactions, you must pair with the human. Ask them:
 
-> "I need to send blockchain transactions on your behalf. Please go to https://clanker-wallet.vercel.app, connect your wallet, and give me the pairing JSON."
+> "I need to send blockchain transactions on your behalf. Please go to https://clanker-wallet.xyz, connect your wallet, and give me the pairing JSON."
 
 The human will give you a JSON string like:
 ```json
 {"version":1,"pubkey":"ab12cd...","relay":"wss://clanker-wallet-relay-625052130878.us-east1.run.app/ws","wallet":"0x..."}
 ```
 
-Save this pairing JSON — you'll need it every session.
+Pair with it:
+```bash
+clanker-wallet pair '{"version":1,"pubkey":"ab12...","relay":"wss://...","wallet":"0x..."}'
+```
+
+This saves identity and pairing to `~/.clanker-wallet/`. You only need to do this once.
 
 ### Transaction notifications
 
@@ -34,74 +40,53 @@ After pairing, ask the human:
 
 > "Would you like me to notify you here when I need a transaction approved? I'll send you a message with a direct link to approve it."
 
-If they agree, **every time you call `requestTx()`**, immediately send a message through your current communication channel (the same chat/channel you're talking on) with:
+If they agree, **every time you send a `tx` command**, immediately send a message through your current communication channel with:
 
-1. A short description of what the tx does (from the `context.reason`)
-2. A direct link to the web app: **https://clanker-wallet.vercel.app**
+1. A short description of what the tx does (from the `--reason`)
+2. A direct link to the web app: **https://clanker-wallet.xyz**
 3. The urgency level
 
 Example notification:
-> 🔔 **Transaction awaiting your approval**
+> Transaction awaiting your approval
 > I'm requesting to send 0.001 ETH on Sepolia to a test address.
 > Urgency: normal
-> 👉 [Approve or reject here](https://clanker-wallet.vercel.app)
-
-This way the human doesn't need to keep the web app open — they click the link, review, and approve.
-
-```typescript
-import { ClankerWallet } from 'clanker-wallet'
-import { readFileSync, writeFileSync, existsSync } from 'fs'
-
-// Restore or create agent identity
-const secretKey = existsSync('.agent-key')
-  ? new Uint8Array(readFileSync('.agent-key'))
-  : undefined
-
-const wallet = new ClankerWallet({ agentName: 'my-agent', secretKey })
-
-// Save identity for next session
-if (!secretKey) writeFileSync('.agent-key', wallet.secretKey)
-
-// Pair with human
-wallet.pair(pairingJson)
-```
+> [Approve or reject here](https://clanker-wallet.xyz)
 
 ## Sending a Transaction
 
-`requestTx()` sends the request to the human and **blocks until they approve or reject**. It returns the transaction hash on approval, or throws on rejection/timeout.
-
-```typescript
-const txHash = await wallet.requestTx({
-  chain_id: 1,            // 1=Ethereum, 137=Polygon, 8453=Base, 42161=Arbitrum
-  transaction: {
-    to: '0x...',           // recipient address
-    value: '0',            // amount in WEI (not ETH!) — '0' for contract calls
-    data: '0x',            // calldata hex — '0x' for simple transfers
-  },
-  context: {
-    reason: 'Why this tx is needed',    // shown to human
-    urgency: 'low',                     // low | medium | high
-    expected_outcome: 'What will happen',
-  },
-  timeout_ms: 120_000,    // how long to wait (default: 1 hour)
-})
+```bash
+clanker-wallet tx \
+  --chain 1 \
+  --to 0xRecipientAddress \
+  --value 1000000000000000 \
+  --reason "Send 0.001 ETH to recipient" \
+  --urgency medium \
+  --timeout 120000
 ```
+
+The command **blocks until the human approves or rejects**. Output is JSON:
+- Approved: `{"tx_hash":"0x...","status":"approved"}` (exit code 0)
+- Rejected: `{"status":"rejected","error":"..."}` (exit code 1)
+- Timeout: `{"status":"timeout","error":"..."}` (exit code 2)
 
 ## Critical Details
 
-- **value is in WEI, not ETH.** 1 ETH = `'1000000000000000000'`. Use string, not number.
-- **data is hex-encoded calldata.** Use `'0x'` for simple ETH transfers. For contract calls, encode the function call (e.g. with viem's `encodeFunctionData`).
-- **requestTx() blocks.** The human must be online to approve. Set a reasonable `timeout_ms`. Always notify the human through your communication channel when you send a request (if they opted in).
-- **On rejection, it throws.** Wrap in try/catch:
+- **value is in WEI, not ETH.** 1 ETH = `1000000000000000000`. Use string, not number.
+- **data is hex-encoded calldata.** Use `0x` for simple ETH transfers. For contract calls, encode the function call.
+- **The human must be online to approve.** Set a reasonable `--timeout`. Always notify the human through your communication channel when you send a request (if they opted in).
 
-```typescript
-try {
-  const txHash = await wallet.requestTx({ ... })
-  console.log('approved:', txHash)
-} catch (err) {
-  console.log('rejected or timed out:', err.message)
-}
-```
+## tx Flags
+
+| Flag | Required | Default | Description |
+|------|----------|---------|-------------|
+| `--chain <id>` | yes | — | Chain ID (1=Ethereum, 137=Polygon, 8453=Base) |
+| `--to <address>` | yes | — | Recipient address |
+| `--value <wei>` | no | `0` | Value in wei |
+| `--data <hex>` | no | `0x` | Calldata hex |
+| `--reason <text>` | no | — | Shown to human |
+| `--urgency <level>` | no | — | `low`, `medium`, or `high` |
+| `--expected-outcome <text>` | no | — | What will happen |
+| `--timeout <ms>` | no | `3600000` | How long to wait |
 
 ## Common Chain IDs
 
@@ -117,71 +102,46 @@ try {
 ## Common Patterns
 
 ### Simple ETH transfer
-```typescript
-await wallet.requestTx({
-  chain_id: 1,
-  transaction: {
-    to: '0xRecipientAddress',
-    value: '1000000000000000',  // 0.001 ETH
-    data: '0x',
-  },
-  context: { reason: 'Send 0.001 ETH to recipient' },
-})
+```bash
+clanker-wallet tx --chain 1 --to 0xRecipientAddress --value 1000000000000000 --reason "Send 0.001 ETH"
 ```
 
 ### ERC-20 token transfer
-```typescript
-// transfer(address to, uint256 amount)
-// selector: 0xa9059cbb
-const to = '0xRecipient'.slice(2).padStart(64, '0')
-const amount = BigInt('1000000').toString(16).padStart(64, '0')  // 1 USDC (6 decimals)
-const data = '0xa9059cbb' + to + amount
-
-await wallet.requestTx({
-  chain_id: 1,
-  transaction: {
-    to: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',  // USDC contract
-    value: '0',
-    data,
-  },
-  context: { reason: 'Transfer 1 USDC' },
-})
+```bash
+# transfer(address to, uint256 amount) — selector 0xa9059cbb
+# encode to + amount as 32-byte padded hex
+clanker-wallet tx \
+  --chain 1 \
+  --to 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48 \
+  --data 0xa9059cbb000000000000000000000000RecipientAddr00000000000000000000000000000000000000000000000000000000000f4240 \
+  --reason "Transfer 1 USDC"
 ```
 
 ### ERC-20 approval
-```typescript
-// approve(address spender, uint256 amount)
-// selector: 0x095ea7b3
-const spender = '0xSpenderAddress'.slice(2).padStart(64, '0')
-const amount = BigInt('1000000').toString(16).padStart(64, '0')
-const data = '0x095ea7b3' + spender + amount
-
-await wallet.requestTx({
-  chain_id: 1,
-  transaction: {
-    to: '0xTokenContractAddress',
-    value: '0',
-    data,
-  },
-  context: { reason: 'Approve 1 USDC spend for DeFi protocol' },
-})
+```bash
+# approve(address spender, uint256 amount) — selector 0x095ea7b3
+clanker-wallet tx \
+  --chain 1 \
+  --to 0xTokenContractAddress \
+  --data 0x095ea7b3000000000000000000000000SpenderAddr0000000000000000000000000000000000000000000000000000000000000f4240 \
+  --reason "Approve 1 USDC spend for DeFi protocol"
 ```
 
-## Events (optional)
+## Other Commands
 
-Monitor connection lifecycle:
+```bash
+# Check pairing status
+clanker-wallet status
+# → {"agent_id":"agent_abc123","paired":true,"wallet":"0x...","relay":"wss://..."}
 
-```typescript
-wallet.on('connected', ({ room }) => console.log('connected to relay'))
-wallet.on('request_sent', ({ request_id }) => console.log('tx sent, waiting for human'))
-wallet.on('response', ({ status, tx_hash }) => console.log('human responded:', status))
-wallet.on('error', ({ message }) => console.error('error:', message))
-wallet.on('disconnected', () => console.log('relay disconnected'))
+# Show agent identity
+clanker-wallet whoami
+# → {"agent_id":"agent_abc123","public_key":"ab12cd..."}
 ```
 
 ## Troubleshooting
 
-- **"not paired"** — call `wallet.pair(json)` before `requestTx()`
-- **timeout** — human didn't respond in time, increase `timeout_ms` or ask them to check the web app
-- **"rejected by human"** — human clicked reject. Explain why the tx is needed and try again if appropriate.
-- **connection error** — relay may be down, try again in a few seconds
+- **exit code 4 / "not paired"** — run `clanker-wallet pair '<JSON>'` first
+- **exit code 2 / timeout** — human didn't respond in time, increase `--timeout` or ask them to check the web app
+- **exit code 1 / "rejected"** — human clicked reject. Explain why the tx is needed and try again if appropriate.
+- **exit code 3 / connection error** — relay may be down, try again in a few seconds
