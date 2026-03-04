@@ -1,0 +1,175 @@
+# Clanker Wallet — Complete AI Agent Integration Guide
+
+> Human-approved blockchain transactions for AI agents. You propose, human reviews and signs. No private keys needed.
+
+## Overview
+
+Clanker Wallet bridges AI agents and human-controlled wallets. The agent proposes a transaction, the human reviews it in a web app (with simulation, risk flags, and full tx details), then approves or rejects. All communication is end-to-end encrypted using NaCl box.
+
+## Install
+
+```bash
+npm install -g clanker-wallet    # global CLI
+npm install clanker-wallet       # TypeScript SDK
+pip install clanker-wallet       # Python SDK
+```
+
+Or use without installing: `npx clanker-wallet` / `bunx clanker-wallet`
+
+## Quick Start (CLI)
+
+```bash
+# 1. Human goes to https://clanker-wallet.xyz, connects wallet, copies pairing JSON
+# 2. Pair (one-time)
+clanker-wallet pair '{"version":1,"pubkey":"ab12...","relay":"wss://...","wallet":"0x..."}'
+
+# 3. Check pairing
+clanker-wallet status
+
+# 4. Send a transaction (blocks until human approves/rejects)
+clanker-wallet tx --chain 1 --to 0xRecipient --value 1000000000000000000 --reason "Send 1 ETH"
+```
+
+## CLI Reference
+
+### `clanker-wallet pair '<json>'`
+Pair with a human wallet. Run once — saves to `~/.clanker-wallet/`.
+
+### `clanker-wallet tx [flags]`
+Request a transaction. Blocks until approved, rejected, or timeout.
+
+| Flag | Required | Default | Description |
+|------|----------|---------|-------------|
+| `--chain <id>` | yes | — | Chain ID (1=Ethereum, 137=Polygon, 8453=Base, 42161=Arbitrum, 10=Optimism, 11155111=Sepolia) |
+| `--to <address>` | yes | — | Recipient/contract address |
+| `--value <wei>` | no | `0` | Value in wei (1 ETH = 1000000000000000000) |
+| `--data <hex>` | no | `0x` | Calldata (hex-encoded). Use `0x` for simple transfers. |
+| `--reason <text>` | no | — | Human-readable reason (shown in approval UI) |
+| `--urgency <level>` | no | — | `low`, `medium`, or `high` |
+| `--expected-outcome <text>` | no | — | What will happen if approved |
+| `--timeout <ms>` | no | `3600000` | How long to wait for human response |
+
+### `clanker-wallet status`
+Check pairing status. Returns JSON with agent_id, paired status, wallet address, relay URL.
+
+### `clanker-wallet whoami`
+Show agent identity (agent_id and public_key).
+
+## Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Transaction approved |
+| 1 | Transaction rejected by human |
+| 2 | Timeout (human didn't respond) |
+| 3 | Connection/relay error |
+| 4 | Not paired |
+| 5 | Invalid arguments |
+
+## TypeScript SDK
+
+```typescript
+import { ClankerWallet } from 'clanker-wallet'
+
+const wallet = new ClankerWallet({ agentName: 'my-agent' })
+
+// Pair (one-time)
+wallet.pair(pairingJson)
+
+// Simple ETH transfer
+const txHash = await wallet.requestTx({
+  chain_id: 1,
+  transaction: {
+    to: '0xRecipientAddress',
+    value: '1000000000000000000', // 1 ETH in wei
+    data: '0x',
+  },
+  context: {
+    reason: 'Send 1 ETH to recipient',
+    urgency: 'medium',
+  },
+  timeout_ms: 120000,
+})
+console.log(`Approved: ${txHash}`)
+```
+
+## Python SDK
+
+```python
+from clanker_wallet import ClankerWallet, Transaction, RequestTxOptions, TxContext
+
+agent = ClankerWallet()
+agent.pair(pairing_json)
+
+tx_hash = await agent.request_tx(RequestTxOptions(
+    chain_id=1,
+    transaction=Transaction(to="0x...", value="1000000000000000000", data="0x"),
+    context=TxContext(reason="Send 1 ETH", urgency="medium"),
+    timeout_ms=120000,
+))
+```
+
+## Common Patterns
+
+### Simple ETH transfer
+```bash
+clanker-wallet tx --chain 1 --to 0xRecipient --value 1000000000000000 --reason "Send 0.001 ETH"
+```
+
+### ERC-20 token transfer
+```bash
+# transfer(address,uint256) selector: 0xa9059cbb
+clanker-wallet tx \
+  --chain 1 \
+  --to 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48 \
+  --data 0xa9059cbb000000000000000000000000RECIPIENT_PADDED0000000000000000000000000000000000000000000000000000000000AMOUNT_HEX \
+  --reason "Transfer USDC"
+```
+
+### ERC-20 approval
+```bash
+# approve(address,uint256) selector: 0x095ea7b3
+clanker-wallet tx \
+  --chain 1 \
+  --to 0xTokenContract \
+  --data 0x095ea7b3000000000000000000000000SPENDER_PADDED0000000000000000000000000000000000000000000000000000000000AMOUNT_HEX \
+  --reason "Approve token spending"
+```
+
+### DEX swap (Uniswap V3)
+```bash
+# exactInputSingle selector: 0x04e45aaf
+clanker-wallet tx \
+  --chain 1 \
+  --to 0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45 \
+  --value 1000000000000000000 \
+  --data 0x04e45aaf...ENCODED_PARAMS... \
+  --reason "Swap 1 ETH for USDC via Uniswap V3"
+```
+
+## How It Works
+
+1. Human opens clanker-wallet.xyz, connects wallet, gets pairing JSON
+2. Agent runs `pair` — establishes E2E encrypted channel via NaCl box
+3. Agent runs `tx` — encrypts transaction request, sends via WebSocket relay
+4. Human sees tx details + simulation + risk flags in web app
+5. Human approves → wallet signs + broadcasts → agent gets tx hash
+6. Human rejects → agent gets rejection with reason
+
+The relay server never sees plaintext. All messages are encrypted end-to-end between agent and human.
+
+## Security Model
+
+- Agent has NO private keys — cannot sign transactions
+- Human has FULL control — can reject any transaction
+- Communication is E2E encrypted (NaCl box / x25519-xsalsa20-poly1305)
+- Relay is untrusted — only passes encrypted blobs
+- Agent identity is a keypair generated locally, stored in `~/.clanker-wallet/`
+
+## Links
+
+- Homepage: https://clanker-wallet.xyz
+- GitHub: https://github.com/almogdepaz/clanker-wallet
+- npm: https://www.npmjs.com/package/clanker-wallet
+- PyPI: https://pypi.org/project/clanker-wallet/
+- AI Agent Skill: https://clanker-wallet.xyz/SKILL.md
