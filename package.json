@@ -13,7 +13,13 @@
   "bin": {
     "clanker-wallet": "bin/cli.js"
   },
-  "files": ["dist", "bin", "SKILL.md", "README.md", "LICENSE"],
+  "files": [
+    "dist",
+    "bin",
+    "SKILL.md",
+    "README.md",
+    "LICENSE"
+  ],
   "license": "MIT",
   "author": "Clanker Wallet Contributors",
   "repository": {
@@ -21,7 +27,27 @@
     "url": "git+https://github.com/almogdepaz/clanker-wallet.git"
   },
   "homepage": "https://github.com/almogdepaz/clanker-wallet#readme",
-  "keywords": ["wallet", "ai-agent", "ethereum", "e2e-encrypted", "transaction-approval"],
+  "keywords": [
+    "wallet",
+    "ai-agent",
+    "ethereum",
+    "e2e-encrypted",
+    "transaction-approval",
+    "blockchain",
+    "web3",
+    "langchain",
+    "human-in-the-loop",
+    "evm",
+    "agent-wallet",
+    "llm",
+    "typescript",
+    "base",
+    "polygon",
+    "transaction",
+    "approval",
+    "defi",
+    "vercel-ai-sdk"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "dev": "tsc --watch",
