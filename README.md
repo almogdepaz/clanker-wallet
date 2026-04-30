@@ -17,8 +17,9 @@ bunx clanker-wallet
 ## Quick Start
 
 ```bash
-# 1. Human goes to https://clanker-wallet.xyz, connects wallet, copies pairing JSON
-# 2. Pair (one-time)
+# 1. Human goes to https://clanker-wallet.xyz, connects wallet, clicks "copy prompt for agent",
+#    pastes the prompt to you. The prompt contains a JSON pairing code.
+# 2. Pair (one-time) — extract the JSON from the prompt
 clanker-wallet pair '{"version":1,"pubkey":"ab12...","relay":"wss://...","wallet":"0x..."}'
 
 # 3. Send a transaction (blocks until human approves or rejects)
@@ -165,8 +166,8 @@ tx_hash = await agent.request_tx(RequestTxOptions(
 
 ## How It Works
 
-1. Human opens [clanker-wallet.xyz](https://clanker-wallet.xyz), connects wallet, gets a pairing code
-2. Agent runs `clanker-wallet pair` — establishes E2E encrypted channel
+1. Human opens [clanker-wallet.xyz](https://clanker-wallet.xyz), connects wallet, clicks "copy prompt for agent" — gets a paste-ready prompt that bundles intent, the setup guide URL, and the pairing JSON
+2. Human pastes the prompt to their AI agent. Agent extracts the JSON and runs `clanker-wallet pair` — establishes E2E encrypted channel
 3. Agent runs `clanker-wallet tx` — encrypts tx with nacl.box, sends via WebSocket relay
 4. Human reviews tx details, simulation, risk flags in the web app
 5. Human approves → wallet signs + broadcasts → agent gets the tx hash

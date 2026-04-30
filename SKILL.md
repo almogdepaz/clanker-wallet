@@ -18,19 +18,22 @@ Or use without installing: `npx clanker-wallet` / `bunx clanker-wallet`
 
 ## Pairing (one-time)
 
-Before you can send transactions, you must pair with the human. Ask them:
+The human will paste a prompt block from https://clanker-wallet.xyz that looks like this:
 
-> "I need to send blockchain transactions on your behalf. Please go to https://clanker-wallet.xyz, connect your wallet, and give me the pairing JSON."
+> please integrate clanker-wallet so you can send blockchain transactions on my behalf.
+>
+> read the setup guide first: https://clanker-wallet.xyz/llms.txt
+>
+> then pair using this code:
+> `{"version":1,"pubkey":"ab12cd...","relay":"wss://...","wallet":"0x..."}`
 
-The human will give you a JSON string like:
-```json
-{"version":1,"pubkey":"ab12cd...","relay":"wss://clanker-wallet-relay-625052130878.us-east1.run.app/ws","wallet":"0x..."}
-```
+Extract the JSON object (the line starting with `{`) and pair:
 
-Pair with it:
 ```bash
 clanker-wallet pair '{"version":1,"pubkey":"ab12...","relay":"wss://...","wallet":"0x..."}'
 ```
+
+If the human only pastes raw JSON (no prompt prose), pair with it directly. If they only paste the URL, ask them to click "copy prompt for agent" on the pairing screen.
 
 This saves identity and pairing to `~/.clanker-wallet/`. You only need to do this once.
 

@@ -22,8 +22,9 @@ async def main():
     # Create agent (generates new x25519 identity keypair)
     agent = ClankerWallet()
 
-    # Pair with human's wallet (QR data from the web app)
-    agent.pair(qr_data_string)
+    # Pair with human's wallet — JSON from the prompt the human pasted
+    # (or scanned from the QR on https://clanker-wallet.xyz)
+    agent.pair(pairing_json)
 
     # Request a transaction
     tx_hash = await agent.request_tx(RequestTxOptions(
@@ -79,9 +80,9 @@ ClankerWallet(*, agent_name=None, secret_key=None)
 
 **Methods:**
 
-#### `pair(qr_data: str) -> PairingData`
+#### `pair(pairing_json: str) -> PairingData`
 
-Parse QR / pairing JSON from the web app. Stores the human's public key and relay URL.
+Parse the pairing JSON from the web app (also matches what the QR code encodes). Stores the human's public key and relay URL.
 
 ```python
 pairing = agent.pair('{"version":1,"pubkey":"ab12...","relay":"wss://relay.example/ws","wallet":"0x..."}')
@@ -191,8 +192,8 @@ from clanker_wallet import (
 
 ## How It Works
 
-1. Human opens the web app, connects wallet, derives an x25519 keypair, displays QR code
-2. Agent calls `pair(qr_data)` — stores human's public key + relay URL
+1. Human opens the web app, connects wallet, derives an x25519 keypair, copies a paste-ready prompt (or scans the QR) containing the pairing JSON
+2. Agent calls `pair(pairing_json)` — stores human's public key + relay URL
 3. Agent calls `request_tx()` — encrypts a `TxRequest` with nacl.box, sends via WebSocket relay
 4. Human's web app decrypts, displays tx details, runs simulation/risk checks
 5. Human approves → wallet signs + broadcasts → encrypted `TxResponse` with tx hash sent back
