@@ -20,8 +20,6 @@ Or use without installing: `npx clanker-wallet` / `bunx clanker-wallet`
 
 The human will paste a prompt block from https://clanker-wallet.xyz that looks like this:
 
-> please integrate clanker-wallet so you can send blockchain transactions on my behalf.
->
 > read the setup guide first: https://clanker-wallet.xyz/llms.txt
 >
 > then pair using this code:
