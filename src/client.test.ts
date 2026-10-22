@@ -1,29 +1,12 @@
 import { describe, test, expect, beforeAll, afterAll } from 'vitest'
-import { spawn, type ChildProcess } from 'node:child_process'
-import { resolve } from 'node:path'
 import nacl from 'tweetnacl'
 import { ClankerWallet } from './client.js'
 import { encryptMessage, decryptMessage, toHex, fromHex } from './crypto.js'
 import type { AgentEnvelope, TxRequest, TxResponse } from './types.js'
-
-const PORT = 9877
-let serverProc: ChildProcess
+import { startTestRelay, type TestRelay } from './testRelay.js'
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms))
-}
-
-async function waitForServerReady(maxAttempts = 20): Promise<void> {
-  for (let i = 0; i < maxAttempts; i++) {
-    try {
-      const res = await fetch(`http://localhost:${PORT}/health`)
-      if (res.ok) return
-    } catch {
-      // not ready
-    }
-    await sleep(250)
-  }
-  throw new Error('server failed to start')
 }
 
 function waitForOpen(ws: WebSocket): Promise<void> {
@@ -103,26 +86,34 @@ async function simulateHuman(
   return { ws, received }
 }
 
+/** post an encrypted TxResponse into the room from `sender`'s keypair */
+function sendResponse(
+  ws: WebSocket,
+  sender: nacl.BoxKeyPair,
+  room: string,
+  agentPubkeyHex: string,
+  response: TxResponse,
+): void {
+  const envelope: AgentEnvelope = {
+    sender_pubkey: toHex(sender.publicKey),
+    ciphertext: encryptMessage(JSON.stringify(response), fromHex(agentPubkeyHex), sender.secretKey),
+  }
+  ws.send(JSON.stringify({ type: 'message', room, payload: JSON.stringify(envelope) }))
+}
+
+let relay: TestRelay
+let relayUrl: string
+
 beforeAll(async () => {
-  const relayDir = resolve(import.meta.dirname!, '../../relay')
+  relay = await startTestRelay()
+  relayUrl = relay.url
+})
 
-  serverProc = spawn('bun', ['src/server.ts'], {
-    cwd: relayDir,
-    env: { ...process.env, PORT: String(PORT) },
-    stdio: 'pipe',
-  })
-
-  serverProc.stderr?.on('data', (d) => process.stderr.write(d))
-
-  await waitForServerReady()
-}, 15000)
-
-afterAll(() => {
-  serverProc?.kill('SIGINT')
+afterAll(async () => {
+  await relay?.close()
 })
 
 describe('ClankerWallet SDK', () => {
-  const relayUrl = `ws://localhost:${PORT}/ws`
 
   test('generates unique agent ID from keypair', () => {
     const w1 = new ClankerWallet()
@@ -338,6 +329,120 @@ describe('ClankerWallet SDK', () => {
     }
 
     spy.close()
+    humanWs.close()
+  })
+
+  test('ignores responses encrypted by anyone other than the paired human', async () => {
+    const humanKeypair = nacl.box.keyPair()
+    const humanPubkeyHex = toHex(humanKeypair.publicKey)
+    const attacker = nacl.box.keyPair()
+
+    // a third party in the same room answers first with a forged approval
+    const attackerWs = new WebSocket(relayUrl)
+    await waitForOpen(attackerWs)
+    attackerWs.send(JSON.stringify({ type: 'join', room: humanPubkeyHex }))
+    await waitForMessage(attackerWs)
+
+    const { ws: humanWs } = await simulateHuman(
+      humanKeypair,
+      relayUrl,
+      (req, agentPubkey) => {
+        sendResponse(attackerWs, attacker, humanPubkeyHex, agentPubkey, {
+          request_id: req.request_id,
+          status: 'approved',
+          tx_hash: '0xforged',
+        })
+        setTimeout(() => {
+          sendResponse(humanWs, humanKeypair, humanPubkeyHex, agentPubkey, {
+            request_id: req.request_id,
+            status: 'approved',
+            tx_hash: '0xgenuine',
+          })
+        }, 300)
+        return null
+      },
+    )
+
+    const agent = new ClankerWallet()
+    agent.pair(JSON.stringify({ version: 1, pubkey: humanPubkeyHex, relay: relayUrl, wallet: '0xhuman' }))
+
+    const txHash = await agent.requestTx({
+      chain_id: 1,
+      transaction: { to: '0xrecipient', value: '1', data: '0x' },
+      timeout_ms: 10000,
+    })
+
+    expect(txHash).toBe('0xgenuine')
+
+    attackerWs.close()
+    humanWs.close()
+  })
+
+  test('managed mode attaches a simulate object to the relay message', async () => {
+    const humanKeypair = nacl.box.keyPair()
+    const humanPubkeyHex = toHex(humanKeypair.publicKey)
+
+    const { ws: humanWs } = await simulateHuman(
+      humanKeypair,
+      relayUrl,
+      (req) => ({ request_id: req.request_id, status: 'approved' as const, tx_hash: '0xmanaged' }),
+    )
+
+    const agent = new ClankerWallet()
+    const data = agent.pair(JSON.stringify({
+      version: 1,
+      pubkey: humanPubkeyHex,
+      relay: relayUrl,
+      wallet: '0xhumanwallet',
+      mode: 'managed',
+    }))
+    expect(data.mode).toBe('managed')
+
+    await agent.requestTx({
+      chain_id: 8453,
+      transaction: { to: '0xto', value: '42', data: '0xabcd' },
+      timeout_ms: 10000,
+    })
+
+    const sent = relay.received.filter((m) => m.type === 'message' && m.room === humanPubkeyHex)
+    const fromAgent = sent.filter((m) => JSON.parse(m.payload).sender_pubkey === toHex(agent.publicKey))
+    expect(fromAgent).toHaveLength(1)
+    expect(fromAgent[0].simulate).toEqual({
+      from: '0xhumanwallet',
+      to: '0xto',
+      value: '42',
+      data: '0xabcd',
+      chainId: 8453,
+    })
+
+    humanWs.close()
+  })
+
+  test('encrypted mode (default) sends no simulate object', async () => {
+    const humanKeypair = nacl.box.keyPair()
+    const humanPubkeyHex = toHex(humanKeypair.publicKey)
+
+    const { ws: humanWs } = await simulateHuman(
+      humanKeypair,
+      relayUrl,
+      (req) => ({ request_id: req.request_id, status: 'approved' as const, tx_hash: '0xenc' }),
+    )
+
+    const agent = new ClankerWallet()
+    agent.pair(JSON.stringify({ version: 1, pubkey: humanPubkeyHex, relay: relayUrl, wallet: '0xhumanwallet' }))
+
+    await agent.requestTx({
+      chain_id: 1,
+      transaction: { to: '0xto', value: '1', data: '0x' },
+      timeout_ms: 10000,
+    })
+
+    const fromAgent = relay.received.filter((m) =>
+      m.type === 'message' && m.room === humanPubkeyHex &&
+      JSON.parse(m.payload).sender_pubkey === toHex(agent.publicKey))
+    expect(fromAgent).toHaveLength(1)
+    expect(fromAgent[0].simulate).toBeUndefined()
+
     humanWs.close()
   })
 })

@@ -156,14 +156,14 @@ clanker-wallet tx \
 5. Human approves → wallet signs + broadcasts → agent gets tx hash
 6. Human rejects → agent gets rejection with reason
 
-The relay server never sees plaintext. All messages are encrypted end-to-end between agent and human.
+Request and response payloads are encrypted end-to-end between agent and human; the relay only forwards them. Exception: when paired in managed mode, the agent also sends the transaction fields (from, to, value, data, chainId) to the relay for simulation.
 
 ## Security Model
 
 - Agent has NO private keys — cannot sign transactions
 - Human has FULL control — can reject any transaction
 - Communication is E2E encrypted (NaCl box / x25519-xsalsa20-poly1305)
-- Relay is untrusted — only passes encrypted blobs
+- Relay is untrusted — only passes encrypted blobs, except the managed-mode simulation fields (see above)
 - Agent identity is a keypair generated locally, stored in `~/.clanker-wallet/`
 
 ## Links

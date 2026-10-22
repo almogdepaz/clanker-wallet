@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { ClankerWallet } from '../dist/index.js'
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs'
+import { readFileSync, writeFileSync, mkdirSync, existsSync, chmodSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 
@@ -14,6 +14,8 @@ const EXIT = { OK: 0, REJECTED: 1, TIMEOUT: 2, CONNECTION: 3, NOT_PAIRED: 4, BAD
 // ── helpers ──────────────────────────────────────────────────────────
 const hex = (bytes) => Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('')
 const fromHexStr = (h) => new Uint8Array(h.match(/.{2}/g).map(b => parseInt(b, 16)))
+/** short id the human compares in the web app: first 16 hex (64 bits) of the x25519 pubkey, "ab12 cd34 ef56 7890" */
+const fingerprint = (pubkeyHex) => pubkeyHex.slice(0, 16).toLowerCase().match(/.{1,4}/g).join(' ')
 
 function die(msg, code) {
   process.stderr.write(msg + '\n')
@@ -24,19 +26,25 @@ function out(obj) {
   process.stdout.write(JSON.stringify(obj) + '\n')
 }
 
+// owner-only; an existing dir from an older version is tightened too
 function ensureDir() {
-  if (!existsSync(STATE_DIR)) mkdirSync(STATE_DIR, { recursive: true })
+  if (!existsSync(STATE_DIR)) mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 })
+  else chmodSync(STATE_DIR, 0o700)
 }
 
+// identity.json holds the agent secret key: owner-only, tightened if an older version left it readable
 function loadIdentity() {
   if (!existsSync(IDENTITY_FILE)) return null
+  ensureDir()
+  chmodSync(IDENTITY_FILE, 0o600)
   try { return JSON.parse(readFileSync(IDENTITY_FILE, 'utf8')) }
   catch { return null }
 }
 
 function saveIdentity(data) {
   ensureDir()
-  writeFileSync(IDENTITY_FILE, JSON.stringify(data, null, 2) + '\n')
+  writeFileSync(IDENTITY_FILE, JSON.stringify(data, null, 2) + '\n', { mode: 0o600 })
+  chmodSync(IDENTITY_FILE, 0o600)
 }
 
 function loadPairing() {
@@ -145,6 +153,7 @@ async function cmdTx(flags) {
     pubkey: pairing.pubkey,
     relay: pairing.relay,
     wallet: pairing.wallet,
+    mode: pairing.mode || undefined,
   })
   wallet.pair(pairingJson)
 
@@ -189,6 +198,7 @@ function cmdWhoami() {
   out({
     agent_id: wallet.agentId,
     public_key: hex(wallet.publicKey),
+    fingerprint: fingerprint(hex(wallet.publicKey)),
   })
 }
 

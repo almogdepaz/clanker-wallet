@@ -227,9 +227,12 @@ class ClankerWallet:
                 if msg.get("type") == "message":
                     try:
                         env_raw = json.loads(msg["payload"])
+                        # only the paired human may answer (room id == human pubkey hex)
+                        if str(env_raw.get("sender_pubkey", "")).lower() != room.lower():
+                            continue
                         plaintext_resp = decrypt_message(
                             env_raw["ciphertext"],
-                            from_hex(env_raw["sender_pubkey"]),
+                            human_pubkey,
                             self.secret_key,
                         )
                         if plaintext_resp is None:

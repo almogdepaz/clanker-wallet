@@ -35,6 +35,10 @@ If the human only pastes raw JSON (no prompt prose), pair with it directly. If t
 
 This saves identity and pairing to `~/.clanker-wallet/`. You only need to do this once.
 
+### Trust (first request)
+
+The web app lists a new agent as unverified and shows its fingerprint (e.g. `ab12 cd34 ef56 7890`). Until the human compares it with the `fingerprint` from `clanker-wallet whoami` and clicks "trust this agent", none of their auto-approve rules apply: every tx waits for manual approval. Contract rules (contract address + allowed methods) do not limit token amounts or recipients: a rule allowing `transfer` on a token auto-approves any amount to any recipient. If asked, run `clanker-wallet whoami` and share the fingerprint.
+
 ### Transaction notifications
 
 After pairing, ask the human:
@@ -137,7 +141,7 @@ clanker-wallet status
 
 # Show agent identity
 clanker-wallet whoami
-# → {"agent_id":"agent_abc123","public_key":"ab12cd..."}
+# → {"agent_id":"agent_abc123","public_key":"ab12cd34ef567890...","fingerprint":"ab12 cd34 ef56 7890"}
 ```
 
 ## Troubleshooting

@@ -33,7 +33,12 @@ export function decryptMessage(
   senderPublicKey: Uint8Array,
   recipientSecretKey: Uint8Array,
 ): string | null {
-  const raw = base64ToBytes(base64Payload)
+  let raw: Uint8Array
+  try {
+    raw = base64ToBytes(base64Payload)
+  } catch {
+    return null
+  }
   if (raw.length <= nacl.box.nonceLength) return null
 
   const nonce = raw.slice(0, nacl.box.nonceLength)
@@ -53,7 +58,13 @@ export function toHex(bytes: Uint8Array): string {
 
 /** hex string → Uint8Array (strips 0x prefix if present) */
 export function fromHex(hex: string): Uint8Array {
-  const clean = hex.startsWith('0x') ? hex.slice(2) : hex
+  const clean = hex.startsWith('0x') || hex.startsWith('0X') ? hex.slice(2) : hex
+  if (clean.length % 2 !== 0) {
+    throw new Error('invalid hex string: length must be even')
+  }
+  if (!/^[0-9a-fA-F]*$/.test(clean)) {
+    throw new Error('invalid hex string: contains non-hex characters')
+  }
   const bytes = new Uint8Array(clean.length / 2)
   for (let i = 0; i < bytes.length; i++) {
     bytes[i] = parseInt(clean.slice(i * 2, i * 2 + 2), 16)
@@ -63,7 +74,11 @@ export function fromHex(hex: string): Uint8Array {
 
 /** derive an Ed25519 signing keypair from a 32-byte seed */
 export function signingKeypairFromSeed(seed: Uint8Array): nacl.SignKeyPair {
-  return nacl.sign.keyPair.fromSeed(seed)
+  if (seed.length !== nacl.sign.seedLength) {
+    throw new Error(`invalid seed length: expected ${nacl.sign.seedLength} bytes, got ${seed.length}`)
+  }
+  // copy to keep derivation independent of caller-owned mutable buffers
+  return nacl.sign.keyPair.fromSeed(new Uint8Array(seed))
 }
 
 /** sign a message string with an Ed25519 secret key. returns base64(signature). */

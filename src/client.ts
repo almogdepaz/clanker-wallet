@@ -17,6 +17,7 @@ interface PairingState {
   humanPubkeyHex: string
   relayUrl: string
   humanWallet: string | null
+  mode: 'encrypted' | 'managed'
 }
 
 export class ClankerWallet extends TypedEmitter {
@@ -69,6 +70,7 @@ export class ClankerWallet extends TypedEmitter {
       humanPubkeyHex: data.pubkey,
       relayUrl: data.relay,
       humanWallet: data.wallet || null,
+      mode: data.mode || 'encrypted',
     }
 
     this.emit('paired', { relay: data.relay, wallet: data.wallet || '' })
@@ -86,7 +88,7 @@ export class ClankerWallet extends TypedEmitter {
       throw new Error('not paired — call pair() first')
     }
 
-    const { humanPubkey, humanPubkeyHex, relayUrl } = this.pairing
+    const { humanPubkey, humanPubkeyHex, relayUrl, humanWallet, mode } = this.pairing
     const timeoutMs = options.timeout_ms ?? DEFAULT_TIMEOUT_MS
     const requestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
 
@@ -171,11 +173,22 @@ export class ClankerWallet extends TypedEmitter {
             ciphertext,
             signing_pubkey: this.signingPubkeyHex,
           }
-          ws.send(JSON.stringify({
+          const wsMsg: Record<string, unknown> = {
             type: 'message',
             room: humanPubkeyHex,
             payload: JSON.stringify(envelope),
-          }))
+          }
+          // managed mode: relay gets plaintext tx params so it can simulate
+          if (mode === 'managed') {
+            wsMsg.simulate = {
+              from: humanWallet || '',
+              to: options.transaction.to,
+              value: options.transaction.value,
+              data: options.transaction.data,
+              chainId: options.chain_id,
+            }
+          }
+          ws.send(JSON.stringify(wsMsg))
           this.emit('request_sent', { request_id: requestId })
           return
         }
@@ -183,11 +196,9 @@ export class ClankerWallet extends TypedEmitter {
         if (msg.type === 'message') {
           try {
             const envelope: AgentEnvelope = JSON.parse(msg.payload!)
-            const plaintext = decryptMessage(
-              envelope.ciphertext,
-              fromHex(envelope.sender_pubkey),
-              this.secretKey,
-            )
+            // only the paired human may answer
+            if (envelope.sender_pubkey?.toLowerCase() !== humanPubkeyHex.toLowerCase()) return
+            const plaintext = decryptMessage(envelope.ciphertext, humanPubkey, this.secretKey)
             if (!plaintext) return
 
             const response: TxResponse = JSON.parse(plaintext)

@@ -16,6 +16,7 @@ from typing import Any, Callable, Dict, Generator, List, Optional, Tuple
 
 import pytest
 import websockets.asyncio.client
+import websockets.asyncio.server
 
 from clanker_wallet import ClankerWallet
 from clanker_wallet.crypto import (
@@ -80,6 +81,56 @@ def relay_server() -> Generator[subprocess.Popen[bytes], None, None]:
         proc.wait(timeout=5)
     except subprocess.TimeoutExpired:
         proc.kill()
+
+
+@pytest.fixture
+async def inprocess_relay() -> Any:
+    """Minimal in-process relay (join room, broadcast to the other members).
+
+    Yields the relay ws url. Self-contained: no external relay checkout needed.
+    """
+    rooms: Dict[str, set[Any]] = {}
+
+    async def handler(conn: Any) -> None:
+        room: Optional[str] = None
+        try:
+            async for raw in conn:
+                msg = json.loads(raw)
+                if msg.get("type") == "join":
+                    room = msg["room"]
+                    rooms.setdefault(room, set()).add(conn)
+                    await conn.send(json.dumps({"type": "joined", "room": room}))
+                elif msg.get("type") == "message" and room and msg.get("room") == room:
+                    out = json.dumps({"type": "message", "room": room, "payload": msg["payload"]})
+                    for peer in list(rooms.get(room, ())):
+                        if peer is not conn:
+                            await peer.send(out)
+        except websockets.exceptions.ConnectionClosed:
+            pass
+        finally:
+            if room:
+                rooms.get(room, set()).discard(conn)
+
+    async with websockets.asyncio.server.serve(handler, "127.0.0.1", 0) as server:
+        port = next(iter(server.sockets)).getsockname()[1]
+        yield f"ws://127.0.0.1:{port}/ws"
+
+
+async def post_response(
+    ws: Any,
+    sender: BoxKeyPair,
+    room: str,
+    agent_pubkey_hex: str,
+    response: Dict[str, Any],
+) -> None:
+    """Send an encrypted TxResponse into the room from `sender`'s keypair."""
+    envelope = {
+        "sender_pubkey": to_hex(sender.public_key),
+        "ciphertext": encrypt_message(
+            json.dumps(response), from_hex(agent_pubkey_hex), sender.secret_key
+        ),
+    }
+    await ws.send(json.dumps({"type": "message", "room": room, "payload": json.dumps(envelope)}))
 
 
 # ---------------------------------------------------------------------------
@@ -223,7 +274,65 @@ class TestClankerWalletUnit:
 
 
 class TestClankerWalletIntegration:
-    async def test_full_flow_approve(self, relay_server: Any) -> None:
+    async def test_ignores_responses_not_from_paired_human(self, inprocess_relay: str) -> None:
+        """A forged approval encrypted by a third keypair must not resolve the request."""
+        relay_url = inprocess_relay
+        human_kp = generate_keypair()
+        human_pubkey_hex = to_hex(human_kp.public_key)
+        attacker_kp = generate_keypair()
+
+        attacker_ws = await websockets.asyncio.client.connect(relay_url)
+        await attacker_ws.send(json.dumps({"type": "join", "room": human_pubkey_hex}))
+        assert json.loads(await attacker_ws.recv())["type"] == "joined"
+
+        pending: List[asyncio.Task[None]] = []
+
+        def respond(req: Dict[str, Any], agent_pub: str) -> None:
+            async def answer() -> None:
+                await post_response(
+                    attacker_ws,
+                    attacker_kp,
+                    human_pubkey_hex,
+                    agent_pub,
+                    {"request_id": req["request_id"], "status": "approved", "tx_hash": "0xforged"},
+                )
+                await asyncio.sleep(0.3)
+                await post_response(
+                    ws,
+                    human_kp,
+                    human_pubkey_hex,
+                    agent_pub,
+                    {"request_id": req["request_id"], "status": "approved", "tx_hash": "0xgenuine"},
+                )
+
+            pending.append(asyncio.create_task(answer()))
+            return None
+
+        ws, _received, listener_task = await simulate_human(human_kp, relay_url, respond)
+
+        try:
+            agent = ClankerWallet()
+            agent.pair(
+                json.dumps(
+                    {"version": 1, "pubkey": human_pubkey_hex, "relay": relay_url, "wallet": "0xhuman"}
+                )
+            )
+            tx_hash = await agent.request_tx(
+                RequestTxOptions(
+                    chain_id=1,
+                    transaction=Transaction(to="0xrecipient", value="1", data="0x"),
+                    timeout_ms=10000,
+                )
+            )
+            assert tx_hash == "0xgenuine"
+        finally:
+            for t in pending:
+                t.cancel()
+            listener_task.cancel()
+            await ws.close()
+            await attacker_ws.close()
+
+    async def test_full_flow_approve(self, inprocess_relay: str) -> None:
         """Agent sends tx request, human approves."""
         human_kp = generate_keypair()
         human_pubkey_hex = to_hex(human_kp.public_key)
@@ -235,7 +344,7 @@ class TestClankerWalletIntegration:
                 "tx_hash": "0xdeadbeef1234",
             }
 
-        ws, received, listener_task = await simulate_human(human_kp, RELAY_URL, respond)
+        ws, received, listener_task = await simulate_human(human_kp, inprocess_relay, respond)
 
         try:
             agent = ClankerWallet()
@@ -244,7 +353,7 @@ class TestClankerWalletIntegration:
                     {
                         "version": 1,
                         "pubkey": human_pubkey_hex,
-                        "relay": RELAY_URL,
+                        "relay": inprocess_relay,
                         "wallet": "0xhuman",
                     }
                 )
@@ -275,7 +384,7 @@ class TestClankerWalletIntegration:
             listener_task.cancel()
             await ws.close()
 
-    async def test_full_flow_reject(self, relay_server: Any) -> None:
+    async def test_full_flow_reject(self, inprocess_relay: str) -> None:
         """Agent sends tx request, human rejects."""
         human_kp = generate_keypair()
         human_pubkey_hex = to_hex(human_kp.public_key)
@@ -286,7 +395,7 @@ class TestClankerWalletIntegration:
                 "status": "rejected",
             }
 
-        ws, _received, listener_task = await simulate_human(human_kp, RELAY_URL, respond)
+        ws, _received, listener_task = await simulate_human(human_kp, inprocess_relay, respond)
 
         try:
             agent = ClankerWallet()
@@ -295,7 +404,7 @@ class TestClankerWalletIntegration:
                     {
                         "version": 1,
                         "pubkey": human_pubkey_hex,
-                        "relay": RELAY_URL,
+                        "relay": inprocess_relay,
                         "wallet": "0xhuman",
                     }
                 )
@@ -313,7 +422,7 @@ class TestClankerWalletIntegration:
             listener_task.cancel()
             await ws.close()
 
-    async def test_request_tx_timeout(self, relay_server: Any) -> None:
+    async def test_request_tx_timeout(self, inprocess_relay: str) -> None:
         """Agent times out if human never responds."""
         human_kp = generate_keypair()
         human_pubkey_hex = to_hex(human_kp.public_key)
@@ -322,7 +431,7 @@ class TestClankerWalletIntegration:
         def respond(_req: Dict[str, Any], _agent_pub: str) -> None:
             return None
 
-        ws, _received, listener_task = await simulate_human(human_kp, RELAY_URL, respond)
+        ws, _received, listener_task = await simulate_human(human_kp, inprocess_relay, respond)
 
         try:
             agent = ClankerWallet()
@@ -331,7 +440,7 @@ class TestClankerWalletIntegration:
                     {
                         "version": 1,
                         "pubkey": human_pubkey_hex,
-                        "relay": RELAY_URL,
+                        "relay": inprocess_relay,
                         "wallet": "0xhuman",
                     }
                 )
@@ -349,13 +458,13 @@ class TestClankerWalletIntegration:
             listener_task.cancel()
             await ws.close()
 
-    async def test_e2e_encryption_opacity(self, relay_server: Any) -> None:
+    async def test_e2e_encryption_opacity(self, inprocess_relay: str) -> None:
         """Relay only sees ciphertext, never plaintext tx details."""
         human_kp = generate_keypair()
         human_pubkey_hex = to_hex(human_kp.public_key)
 
         # spy on relay traffic
-        spy_ws = await websockets.asyncio.client.connect(RELAY_URL)
+        spy_ws = await websockets.asyncio.client.connect(inprocess_relay)
         await spy_ws.send(json.dumps({"type": "join", "room": human_pubkey_hex}))
         spy_ack = json.loads(await spy_ws.recv())
         assert spy_ack["type"] == "joined"
@@ -381,7 +490,7 @@ class TestClankerWalletIntegration:
                 "tx_hash": "0xabc",
             }
 
-        ws, _received, listener_task = await simulate_human(human_kp, RELAY_URL, respond)
+        ws, _received, listener_task = await simulate_human(human_kp, inprocess_relay, respond)
 
         try:
             agent = ClankerWallet()
@@ -390,7 +499,7 @@ class TestClankerWalletIntegration:
                     {
                         "version": 1,
                         "pubkey": human_pubkey_hex,
-                        "relay": RELAY_URL,
+                        "relay": inprocess_relay,
                         "wallet": "0xhuman",
                     }
                 )

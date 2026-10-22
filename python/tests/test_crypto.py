@@ -222,11 +222,10 @@ class TestCrossLanguageCompat:
 
     @staticmethod
     def _run_ts_in_sdk(script: str) -> subprocess.CompletedProcess[str]:
-        """Write a TS script to a temp file in sdk/ and run with bun."""
-        sdk_dir = os.path.join(
-            os.path.dirname(__file__), "..", "..", "sdk"
-        )
-        sdk_dir = os.path.abspath(sdk_dir)
+        """Write a TS script to a temp file in the TS package root and run with bun."""
+        sdk_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+        if not os.path.isdir(os.path.join(sdk_dir, "node_modules", "tweetnacl")):
+            pytest.skip("TS package dependencies not installed (run npm install in the repo root)")
         fd, path = tempfile.mkstemp(suffix=".ts", dir=sdk_dir)
         try:
             os.write(fd, script.encode())

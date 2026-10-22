@@ -45,6 +45,8 @@ export interface PairingData {
   pubkey: string
   relay: string
   wallet: string
+  /** "encrypted" (default): relay sees only ciphertext. "managed": relay also receives tx params for simulation. */
+  mode?: 'encrypted' | 'managed'
 }
 
 /** options for requestTx */
