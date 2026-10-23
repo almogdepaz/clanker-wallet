@@ -228,14 +228,14 @@ commands:
   whoami          show agent identity
 
 tx flags:
-  --chain <id>              chain ID (required) — 1, 137, 8453, etc.
+  --chain <id>              chain ID (required) — 1, 8453, 84532 (base sepolia), etc.
   --to <address>            recipient (required)
-  --value <wei>             value in wei (default: 0)
+  --value <wei>             value in wei, not ETH (default: 0; 1 ETH = 1000000000000000000)
   --data <hex>              calldata (default: 0x)
   --reason <text>           shown to human
   --urgency <low|med|high>  priority hint
   --expected-outcome <text> what will happen
-  --timeout <ms>            wait time (default: 3600000)
+  --timeout <ms>            how long tx blocks waiting for the human (default: 3600000 = 1 h)
 
 exit codes:
   0  success
@@ -247,11 +247,11 @@ exit codes:
 
 examples:
   clanker-wallet pair '{"version":1,"pubkey":"ab12...","relay":"wss://...","wallet":"0x..."}'
-  clanker-wallet tx --chain 1 --to 0xRecipient --value 1000000000000000000 --reason "swap ETH"
+  clanker-wallet tx --chain 84532 --to 0x000000000000000000000000000000000000dEaD --value 1000000000000000 --reason "send 0.001 ETH on base sepolia"
   clanker-wallet status
   clanker-wallet whoami
 
-docs: https://github.com/almogdepaz/clanker-wallet
+docs: https://clanker-wallet.xyz/SKILL.md
 web:  https://clanker-wallet.xyz
 `)
 }

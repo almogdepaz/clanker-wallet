@@ -11,7 +11,7 @@ Clanker Wallet bridges AI agents and human-controlled wallets. The agent propose
 ```bash
 npm install -g clanker-wallet    # global CLI
 npm install clanker-wallet       # TypeScript SDK
-pip install clanker-wallet       # Python SDK
+pip install clanker-wallet       # Python SDK (Python 3.10+)
 ```
 
 Or use without installing: `npx clanker-wallet` / `bunx clanker-wallet`
@@ -26,8 +26,9 @@ clanker-wallet pair '{"version":1,"pubkey":"ab12...","relay":"wss://...","wallet
 # 3. Check pairing
 clanker-wallet status
 
-# 4. Send a transaction (blocks until human approves/rejects)
-clanker-wallet tx --chain 1 --to 0xRecipient --value 1000000000000000000 --reason "Send 1 ETH"
+# 4. Send a transaction (blocks until human approves/rejects; up to 1 h by default)
+#    0.001 ETH on Base Sepolia (84532) to the burn address. --value is in wei.
+clanker-wallet tx --chain 84532 --to 0x000000000000000000000000000000000000dEaD --value 1000000000000000 --reason "Send 0.001 ETH on Base Sepolia"
 ```
 
 ## CLI Reference
@@ -36,18 +37,18 @@ clanker-wallet tx --chain 1 --to 0xRecipient --value 1000000000000000000 --reaso
 Pair with a human wallet. Run once — saves to `~/.clanker-wallet/`.
 
 ### `clanker-wallet tx [flags]`
-Request a transaction. Blocks until approved, rejected, or timeout.
+Request a transaction. Blocks until approved, rejected, or timeout (default 1 h; set `--timeout <ms>`). Malformed flags exit 5 before anything is sent.
 
 | Flag | Required | Default | Description |
 |------|----------|---------|-------------|
-| `--chain <id>` | yes | — | Chain ID (1=Ethereum, 137=Polygon, 8453=Base, 42161=Arbitrum, 10=Optimism, 11155111=Sepolia) |
-| `--to <address>` | yes | — | Recipient/contract address |
-| `--value <wei>` | no | `0` | Value in wei (1 ETH = 1000000000000000000) |
-| `--data <hex>` | no | `0x` | Calldata (hex-encoded). Use `0x` for simple transfers. |
+| `--chain <id>` | yes | — | Chain ID (1=Ethereum, 137=Polygon, 8453=Base, 42161=Arbitrum, 10=Optimism, 11155111=Sepolia, 84532=Base Sepolia) |
+| `--to <address>` | yes | — | Recipient/contract address: `0x` + 40 hex; mixed case must pass the EIP-55 checksum |
+| `--value <wei>` | no | `0` | Value in wei, a whole number (1 ETH = 1000000000000000000) |
+| `--data <hex>` | no | `0x` | Calldata, `0x` + even-length hex. Use `0x` for simple transfers. |
 | `--reason <text>` | no | — | Human-readable reason (shown in approval UI) |
 | `--urgency <level>` | no | — | `low`, `medium`, or `high` |
 | `--expected-outcome <text>` | no | — | What will happen if approved |
-| `--timeout <ms>` | no | `3600000` | How long to wait for human response |
+| `--timeout <ms>` | no | `3600000` (1 h) | How long `tx` blocks waiting for the human |
 
 ### `clanker-wallet status`
 Check pairing status. Returns JSON with agent_id, paired status, wallet address, relay URL.
@@ -64,7 +65,7 @@ Show agent identity (agent_id and public_key).
 | 2 | Timeout (human didn't respond) |
 | 3 | Connection/relay error |
 | 4 | Not paired |
-| 5 | Invalid arguments |
+| 5 | Invalid arguments (bad or missing flag; nothing sent) |
 
 ## TypeScript SDK
 
@@ -76,24 +77,28 @@ const wallet = new ClankerWallet({ agentName: 'my-agent' })
 // Pair (one-time)
 wallet.pair(pairingJson)
 
-// Simple ETH transfer
+// Simple ETH transfer: 0.001 ETH on Base Sepolia
 const txHash = await wallet.requestTx({
-  chain_id: 1,
+  chain_id: 84532,
   transaction: {
-    to: '0xRecipientAddress',
-    value: '1000000000000000000', // 1 ETH in wei
+    to: '0x000000000000000000000000000000000000dEaD',
+    value: '1000000000000000', // 0.001 ETH in wei (string or bigint)
     data: '0x',
   },
   context: {
-    reason: 'Send 1 ETH to recipient',
+    reason: 'Send 0.001 ETH on Base Sepolia',
     urgency: 'medium',
   },
-  timeout_ms: 120000,
+  timeout_ms: 600000,
 })
 console.log(`Approved: ${txHash}`)
 ```
 
+`requestTx` throws `InvalidTxError` (`field`, `reason`) before sending if `chain_id`, `to`, `value` or `data` is malformed.
+
 ## Python SDK
+
+Requires Python 3.10+.
 
 ```python
 from clanker_wallet import ClankerWallet, Transaction, RequestTxOptions, TxContext
@@ -102,50 +107,48 @@ agent = ClankerWallet()
 agent.pair(pairing_json)
 
 tx_hash = await agent.request_tx(RequestTxOptions(
-    chain_id=1,
-    transaction=Transaction(to="0x...", value="1000000000000000000", data="0x"),
-    context=TxContext(reason="Send 1 ETH", urgency="medium"),
-    timeout_ms=120000,
+    chain_id=84532,  # base sepolia
+    transaction=Transaction(to="0x000000000000000000000000000000000000dEaD", value="1000000000000000", data="0x"),
+    context=TxContext(reason="Send 0.001 ETH on Base Sepolia", urgency="medium"),
+    timeout_ms=600000,
 ))
 ```
+
+`request_tx` raises `InvalidTxError` (a `ValueError`; `field`, `reason`) before sending if the request is malformed.
 
 ## Common Patterns
 
 ### Simple ETH transfer
 ```bash
-clanker-wallet tx --chain 1 --to 0xRecipient --value 1000000000000000 --reason "Send 0.001 ETH"
+clanker-wallet tx --chain 84532 --to 0x000000000000000000000000000000000000dEaD --value 1000000000000000 --reason "Send 0.001 ETH"
 ```
 
 ### ERC-20 token transfer
+0.001 WETH on Base Sepolia (WETH is `0x4200000000000000000000000000000000000006`, 18 decimals). Calldata = selector + recipient left-padded to 32 bytes + amount (`1000000000000000` = `0x38d7ea4c68000`) as a 32-byte word.
 ```bash
 # transfer(address,uint256) selector: 0xa9059cbb
 clanker-wallet tx \
-  --chain 1 \
-  --to 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48 \
-  --data 0xa9059cbb000000000000000000000000RECIPIENT_PADDED0000000000000000000000000000000000000000000000000000000000AMOUNT_HEX \
-  --reason "Transfer USDC"
+  --chain 84532 \
+  --to 0x4200000000000000000000000000000000000006 \
+  --data 0xa9059cbb000000000000000000000000000000000000000000000000000000000000dead00000000000000000000000000000000000000000000000000038d7ea4c68000 \
+  --reason "Transfer 0.001 WETH to a test address"
 ```
 
 ### ERC-20 approval
 ```bash
 # approve(address,uint256) selector: 0x095ea7b3
 clanker-wallet tx \
-  --chain 1 \
-  --to 0xTokenContract \
-  --data 0x095ea7b3000000000000000000000000SPENDER_PADDED0000000000000000000000000000000000000000000000000000000000AMOUNT_HEX \
-  --reason "Approve token spending"
+  --chain 84532 \
+  --to 0x4200000000000000000000000000000000000006 \
+  --data 0x095ea7b3000000000000000000000000000000000000000000000000000000000000dead00000000000000000000000000000000000000000000000000038d7ea4c68000 \
+  --reason "Approve a test address to spend 0.001 WETH"
 ```
 
-### DEX swap (Uniswap V3)
-```bash
-# exactInputSingle selector: 0x04e45aaf
-clanker-wallet tx \
-  --chain 1 \
-  --to 0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45 \
-  --value 1000000000000000000 \
-  --data 0x04e45aaf...ENCODED_PARAMS... \
-  --reason "Swap 1 ETH for USDC via Uniswap V3"
-```
+### Encoding calldata
+Build calldata with a library, never by hand-editing hex, and never leave placeholder text in it:
+- foundry: `cast calldata "transfer(address,uint256)" 0x000000000000000000000000000000000000dEaD 1000000000000000`
+- viem: `encodeFunctionData({ abi: erc20Abi, functionName: 'transfer', args: [to, amount] })`
+- the same works for any contract call (e.g. a DEX swap): encode the function with its ABI and pass the result as `--data`.
 
 ## How It Works
 

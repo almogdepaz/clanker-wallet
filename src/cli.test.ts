@@ -133,6 +133,16 @@ describe('cli tx', () => {
   })
 })
 
+describe('cli --help', () => {
+  it('points at the agent skill and states the tx timeout', () => {
+    const res = spawnSync(process.execPath, [CLI, '--help'], { encoding: 'utf8' })
+    expect(res.status).toBe(0)
+    // help goes to stderr; stdout stays for json results
+    expect(res.stderr).toContain('docs: https://clanker-wallet.xyz/SKILL.md')
+    expect(res.stderr).toMatch(/--timeout <ms>.*1 h/)
+  })
+})
+
 describe('cli --version', () => {
   it.each(['--version', '-v'])('%s prints the package version', (flag) => {
     const { version } = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))

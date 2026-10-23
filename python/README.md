@@ -26,12 +26,12 @@ async def main():
     # (or scanned from the QR on https://clanker-wallet.xyz)
     agent.pair(pairing_json)
 
-    # Request a transaction
+    # Request a transaction: 0.001 ETH on Base Sepolia
     tx_hash = await agent.request_tx(RequestTxOptions(
-        chain_id=1,
+        chain_id=84532,
         transaction=Transaction(
-            to="0xRecipient...",
-            value="1000000000000000000",  # 1 ETH in wei
+            to="0x000000000000000000000000000000000000dEaD",
+            value="1000000000000000",  # 0.001 ETH in wei
             data="0x",
         ),
         context=TxContext(reason="Payment for service"),
@@ -96,12 +96,12 @@ Raises `PairingError` if JSON is invalid or version != 1.
 
 Send an encrypted transaction request to the paired human. Blocks until the human approves, rejects, or the timeout expires.
 
-Returns the on-chain transaction hash on approval.
+Returns the on-chain transaction hash on approval. Raises `InvalidTxError` before anything is sent if `chain_id`, `to`, `value` or `data` is malformed.
 
 ```python
 tx_hash = await agent.request_tx(RequestTxOptions(
-    chain_id=1,
-    transaction=Transaction(to="0x...", value="0", data="0x"),
+    chain_id=84532,
+    transaction=Transaction(to="0x000000000000000000000000000000000000dEaD", value="0", data="0x"),
     context=TxContext(reason="swap tokens"),
     timeout_ms=60_000,  # 1 minute (default: 1 hour)
 ))
@@ -114,12 +114,12 @@ All types are `dataclass(slots=True)` for performance.
 #### `Transaction`
 
 ```python
-Transaction(to: str, value: str, data: str)
+Transaction(to: str, value: str | int, data: str = "0x")
 ```
 
-- `to` — recipient address (0x-prefixed)
-- `value` — wei amount as string (not int)
-- `data` — hex-encoded calldata (0x-prefixed)
+- `to` — recipient address: `0x` + 40 hex characters; mixed case must pass the EIP-55 checksum
+- `value` — whole number of wei, as a decimal string or int (not ETH, no decimals)
+- `data` — calldata, `0x` + even-length hex (defaults to `0x`)
 
 #### `TxContext`
 
@@ -157,6 +157,7 @@ All errors inherit from `ClankerError`.
 | `TxTimeoutError` | No response within timeout | `request_id`, `timeout_ms` |
 | `TxError` | Transaction failed on-chain | `request_id`, `error` |
 | `PairingError` | Invalid pairing data | — |
+| `InvalidTxError` | Malformed tx request (also a `ValueError`); nothing was sent | `field`, `reason` |
 | `RelayError` | WebSocket connection issues | — |
 
 ```python
