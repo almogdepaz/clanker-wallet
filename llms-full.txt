@@ -16,6 +16,8 @@ pip install clanker-wallet       # Python SDK (Python 3.10+)
 
 Or use without installing: `npx clanker-wallet` / `bunx clanker-wallet`
 
+Running in a sandbox (e.g. Claude Code)? Allow a WebSocket to the relay, `wss://relay.clanker-wallet.xyz` (the `relay` URL in the pairing JSON), or commands fail with exit code 3. `pair` writes your identity and the pairing to `~/.clanker-wallet/`; the other commands read them.
+
 ## Quick Start (CLI)
 
 ```bash
@@ -34,10 +36,12 @@ clanker-wallet tx --chain 84532 --to 0x000000000000000000000000000000000000dEaD 
 ## CLI Reference
 
 ### `clanker-wallet pair '<json>'`
-Pair with a human wallet. Run once — saves to `~/.clanker-wallet/`.
+Pair with a human wallet. Run once — `pair` writes identity and pairing to `~/.clanker-wallet/`.
+
+If the pairing JSON contains `"mode":"managed"`, the relay simulates each transaction for the human's review screen, so `tx` also sends the plain transaction fields to it. Otherwise the relay only sees ciphertext. Pair with the JSON as given.
 
 ### `clanker-wallet tx [flags]`
-Request a transaction. Blocks until approved, rejected, or timeout (default 1 h; set `--timeout <ms>`). Malformed flags exit 5 before anything is sent.
+Request a transaction. Blocks until approved, rejected, or timeout (default 1 h; set `--timeout <ms>`). Malformed flags exit 5 before anything is sent. If your shell tool kills long commands, run `tx` in the background and read its output when it exits.
 
 | Flag | Required | Default | Description |
 |------|----------|---------|-------------|
@@ -63,7 +67,7 @@ Show agent identity (agent_id and public_key).
 | 0 | Transaction approved |
 | 1 | Transaction rejected by human |
 | 2 | Timeout (human didn't respond) |
-| 3 | Connection/relay error |
+| 3 | Connection/relay error (in a sandbox or behind a firewall, allow the relay host) |
 | 4 | Not paired |
 | 5 | Invalid arguments (bad or missing flag; nothing sent) |
 

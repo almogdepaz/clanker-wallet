@@ -14,6 +14,8 @@ npx clanker-wallet
 bunx clanker-wallet
 ```
 
+Running in a sandbox (e.g. Claude Code)? Allow a WebSocket to the relay, `wss://relay.clanker-wallet.xyz` (the `relay` URL in the pairing JSON), or commands fail with exit code 3. `pair` also writes `~/.clanker-wallet/` (see [State](#state)).
+
 ## Quick Start
 
 ```bash
@@ -34,7 +36,9 @@ clanker-wallet status
 
 ### `pair`
 
-Pair with a human's web app. Run once — identity and pairing are saved to `~/.clanker-wallet/`.
+Pair with a human's web app. Run once — `pair` writes identity and pairing to `~/.clanker-wallet/`.
+
+If the pairing JSON contains `"mode":"managed"`, the relay simulates each transaction for the human's review screen, so `tx` also sends the plain transaction fields to it. Otherwise the relay only sees ciphertext. Pair with the JSON as given.
 
 ```bash
 clanker-wallet pair '<pairing JSON from web app>'
@@ -43,7 +47,7 @@ clanker-wallet pair '<pairing JSON from web app>'
 
 ### `tx`
 
-Send a transaction request. Blocks until the human approves or rejects, for up to 1 hour by default; `--timeout <ms>` changes that.
+Send a transaction request. Blocks until the human approves or rejects, for up to 1 hour by default; `--timeout <ms>` changes that. If your shell tool kills long commands, run `tx` in the background and read its output when it exits.
 
 ```bash
 clanker-wallet tx \

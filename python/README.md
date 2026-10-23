@@ -12,6 +12,8 @@ pip install clanker-wallet
 
 Requires Python 3.10+.
 
+`request_tx()` opens a WebSocket to the relay in the pairing JSON (`wss://relay.clanker-wallet.xyz`). In a sandbox or behind a firewall, allow that host, or it raises `RelayError`.
+
 ## Quick Start
 
 ```python
@@ -203,7 +205,7 @@ from clanker_wallet import (
 5. Human approves → wallet signs + broadcasts → encrypted `TxResponse` with tx hash sent back
 6. Agent receives tx hash, returns it from `request_tx()`
 
-All messages are encrypted end-to-end. The relay server never sees plaintext.
+All messages are encrypted end-to-end. The relay server never sees plaintext, except in managed mode (`PairingData.mode == "managed"`), where `request_tx()` also sends the transaction fields to the relay for simulation.
 
 ## Development
 

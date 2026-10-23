@@ -16,6 +16,15 @@ npm install -g clanker-wallet
 
 Or use without installing: `npx clanker-wallet` / `bunx clanker-wallet`
 
+### Running in a sandbox
+
+If your commands run in a sandbox (e.g. Claude Code), the CLI needs two things allowed:
+
+- **network:** a WebSocket to the relay, `wss://relay.clanker-wallet.xyz` (the `relay` URL in the pairing JSON). Without it every command that talks to the human fails with exit code 3.
+- **files:** `pair` writes your identity and the pairing to `~/.clanker-wallet/`; `tx`, `status` and `whoami` read them.
+
+Ask the human to allow both before you pair.
+
 ## Pairing (one-time)
 
 Before you can send transactions, check if you're already paired:
@@ -41,7 +50,9 @@ clanker-wallet pair '{"version":1,"pubkey":"ab12...","relay":"wss://...","wallet
 
 If the human only pastes raw JSON (no prompt prose), pair with it directly. If they only paste the URL, ask them to click "copy prompt for agent" on the pairing screen.
 
-This saves identity and pairing to `~/.clanker-wallet/`. You only need to do this once.
+`pair` writes your identity and the pairing to `~/.clanker-wallet/`. You only need to do this once.
+
+If the JSON contains `"mode":"managed"`, the human chose managed mode: the relay simulates each transaction for the review screen, so `tx` also sends the plain transaction fields (from, to, value, data, chainId) to the relay, which shares them with its simulation provider. Without it (or with `"mode":"encrypted"`) the relay only sees ciphertext. Pair with the JSON exactly as given either way.
 
 ### Trust (first request)
 
@@ -79,7 +90,7 @@ clanker-wallet tx \
 
 This sends 0.001 ETH (`1000000000000000` wei) on Base Sepolia (chain `84532`) to the burn address `0x000000000000000000000000000000000000dEaD`.
 
-The command **blocks until the human approves or rejects**, for up to 1 hour by default. Pass `--timeout <ms>` to wait a different time (`600000` = 10 minutes). Output is JSON:
+The command **blocks until the human approves or rejects**, for up to 1 hour by default. Pass `--timeout <ms>` to wait a different time (`600000` = 10 minutes). If your shell tool kills commands after a few minutes, run `tx` in the background and read its output when it exits. Output is JSON:
 - Approved: `{"tx_hash":"0x...","status":"approved"}` (exit code 0)
 - Rejected: `{"status":"rejected","error":"..."}` (exit code 1)
 - Timeout: `{"status":"timeout","error":"..."}` (exit code 2)
@@ -166,4 +177,4 @@ clanker-wallet whoami
 - **exit code 4 / "not paired"** — run `clanker-wallet pair '<JSON>'` first
 - **exit code 2 / timeout** — human didn't respond in time, increase `--timeout` or ask them to check the web app
 - **exit code 1 / "rejected"** — human clicked reject. Explain why the tx is needed and try again if appropriate.
-- **exit code 3 / connection error** — relay may be down, try again in a few seconds
+- **exit code 3 / "relay connection error: could not reach wss://..."** — if you run in a sandbox or behind a firewall, allow that host (`relay.clanker-wallet.xyz` by default, see "Running in a sandbox"); otherwise the relay may be down, try again in a few seconds

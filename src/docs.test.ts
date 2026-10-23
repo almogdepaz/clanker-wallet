@@ -63,6 +63,19 @@ describe('documented contract', () => {
     expect(text).toMatch(/js sdk.*decimal string or `bigint`/i)
   })
 
+  // the first real agent run stalled in a claude code sandbox: wss to the relay and writes to ~ were blocked
+  it.each(['SKILL.md', 'README.md', 'llms-full.txt'])('%s tells sandboxed agents what the cli needs', (doc) => {
+    const text = read(doc)
+    expect(text).toContain('wss://relay.clanker-wallet.xyz')
+    expect(text).toMatch(/writes? .*`~\/\.clanker-wallet\/`/)
+    expect(text).toMatch(/"mode":\s?"managed"/)
+    expect(text).toMatch(/in the background/)
+  })
+
+  it.each(['python/README.md', 'bin/cli.js'])('%s names the relay host to allow', (doc) => {
+    expect(read(doc)).toContain('relay.clanker-wallet.xyz')
+  })
+
   it.each(['README.md', 'llms-full.txt', 'python/README.md'])('%s states the python version next to pip install', (doc) => {
     const text = read(doc)
     expect(text).toContain('pip install clanker-wallet')
