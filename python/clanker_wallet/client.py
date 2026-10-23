@@ -168,9 +168,10 @@ class ClankerWallet:
         )
 
         # sign the request (signature field empty during signing, then filled)
-        sig_payload = json.dumps(_tx_request_to_dict(tx_request), separators=(",", ":"))
+        # the web verifies over JSON.stringify output, which keeps non-ascii characters as-is
+        sig_payload = json.dumps(_tx_request_to_dict(tx_request), separators=(",", ":"), ensure_ascii=False)
         tx_request.signature = sign_message(sig_payload, self._signing_secret_key)
-        plaintext = json.dumps(_tx_request_to_dict(tx_request), separators=(",", ":"))
+        plaintext = json.dumps(_tx_request_to_dict(tx_request), separators=(",", ":"), ensure_ascii=False)
 
         # managed mode: relay gets plaintext tx params so it can simulate (same object as src/client.ts)
         simulate: Optional[Dict[str, Any]] = None

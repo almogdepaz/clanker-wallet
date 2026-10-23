@@ -785,6 +785,32 @@ class TestWire:
         )
         assert plaintext == EVM_PLAINTEXT
 
+    async def test_evm_request_with_non_ascii_context_signs_what_the_web_verifies(
+        self, frozen: None, logging_relay: Tuple[str, List[Dict[str, Any]]]
+    ) -> None:
+        plaintext, _frame = await _capture(
+            logging_relay,
+            {"wallet": RECIPIENT},
+            lambda agent: agent.request_tx(
+                RequestTxOptions(
+                    chain_id=84532,
+                    transaction=Transaction(to=TO, value=5, data="0xabcd"),
+                    context=TxContext(reason="café — 支払い"),
+                    timeout_ms=10000,
+                )
+            ),
+        )
+        # JSON.stringify({...req, signature: ''}) in the web app, for this request
+        js_signed = (
+            '{"request_id":"req_1767323045678_4fzzzx","agent_id":"agent_13be4feaeaf2","timestamp":"2026-01-02T03:04:05.678Z",'
+            f'"chain_id":84532,"transaction":{{"to":"{TO}","value":"5","data":"0xabcd"}},'
+            '"signature":"","context":{"reason":"café — 支払い"}}'
+        )
+        req = json.loads(plaintext)
+        signing_pub = ClankerWallet(secret_key=AGENT_SECRET).signing_public_key
+        assert verify_signature(js_signed, req["signature"], signing_pub)
+        assert '"reason":"café — 支払い"' in plaintext
+
     @pytest.mark.parametrize("family", ["bitcoin", "chia"])
     async def test_request_tx_rejects_a_non_evm_pairing_before_connecting(
         self, logging_relay: Tuple[str, List[Dict[str, Any]]], family: str
