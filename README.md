@@ -229,7 +229,7 @@ txid = await agent.request_transfer(RequestTransferOptions(
 1. Human opens [clanker-wallet.xyz](https://clanker-wallet.xyz), connects wallet, clicks "copy prompt for agent" — gets a paste-ready prompt that bundles intent, the setup guide URL, and the pairing JSON
 2. Human pastes the prompt to their AI agent. Agent extracts the JSON and runs `clanker-wallet pair` — establishes E2E encrypted channel
 3. Agent runs `clanker-wallet tx` (or `send` for bitcoin/chia) — encrypts the request with nacl.box, sends via WebSocket relay
-4. Human reviews tx details, simulation, risk flags in the web app. A new agent shows up as unverified with its fingerprint; auto-approve rules only apply after the human trusts it. Contract rules (address + methods) don't limit token amounts or recipients
+4. Human reviews tx details, simulation, risk flags in the web app. A new agent shows up as unverified with its fingerprint; auto-approve rules only apply after the human trusts it. Trust and recipient allowlists apply on every chain family; value and daily limits (wei) are evm-only, so a bitcoin or chia send never matches a rule that sets one. Contract rules (address + methods) don't limit token amounts or recipients
 5. Human approves → wallet signs + broadcasts → agent gets the tx hash
 
 Request and response payloads are encrypted end-to-end; the relay only forwards them. Exception: when paired in managed mode, the agent also sends the transaction fields (from, to, value, data, chainId) to the relay for simulation.

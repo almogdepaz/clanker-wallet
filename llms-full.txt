@@ -206,7 +206,7 @@ Build calldata with a library, never by hand-editing hex, and never leave placeh
 1. Human opens clanker-wallet.xyz, connects wallet, gets pairing JSON
 2. Agent runs `pair` — establishes E2E encrypted channel via NaCl box
 3. Agent runs `tx` (or `send` for bitcoin/chia) — encrypts the request, sends via WebSocket relay
-4. Human sees tx details + simulation + risk flags in web app
+4. Human sees tx details + simulation + risk flags in web app. Auto-approve rules apply only after the human trusts the agent; trust and recipient allowlists apply on every chain family, value and daily limits (wei) are evm-only (a bitcoin or chia send never matches a rule that sets one)
 5. Human approves → wallet signs + broadcasts → agent gets tx hash
 6. Human rejects → agent gets rejection with reason
 
