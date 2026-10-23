@@ -131,6 +131,21 @@ describe('cli tx', () => {
     expect(res.stderr).toContain(flag)
     expect(relay.received.filter((m) => m.room === human)).toEqual([])
   })
+
+  it('names the relay url when it cannot be reached (exit 3)', () => {
+    const home = mkdtempSync(join(tmpdir(), 'clanker-cli-'))
+    // nothing listens on port 1
+    const deadRelay = 'ws://127.0.0.1:1'
+    runCli(home, 'pair', JSON.stringify({ version: 1, pubkey: randomBytes(32).toString('hex'), relay: deadRelay, wallet: WALLET }))
+    const res = spawnSync(process.execPath, [CLI, 'tx', '--chain', '84532', '--to', TO, '--value', '1', '--timeout', '5000'], {
+      env: { ...process.env, HOME: home },
+      encoding: 'utf8',
+    })
+    expect(res.status).toBe(3)
+    const { status, error } = JSON.parse(res.stdout)
+    expect(status).toBe('error')
+    expect(error).toContain(deadRelay)
+  })
 })
 
 describe('cli --help', () => {

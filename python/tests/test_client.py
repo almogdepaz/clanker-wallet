@@ -31,6 +31,7 @@ from clanker_wallet.errors import (
     InvalidTxError,
     NotPairedError,
     PairingError,
+    RelayError,
     TxRejectedError,
     TxTimeoutError,
 )
@@ -602,6 +603,18 @@ class TestRequestTxValidation:
             await agent.request_tx(RequestTxOptions(chain_id=1, transaction=tx, timeout_ms=2000))
         assert exc.value.field == field
         assert log == []
+
+    async def test_unreachable_relay_names_the_url(self) -> None:
+        # nothing listens on port 1
+        dead_relay = "ws://127.0.0.1:1"
+        agent = ClankerWallet()
+        _pair(agent, dead_relay, to_hex(generate_keypair().public_key), "encrypted")
+
+        with pytest.raises(RelayError) as exc:
+            await agent.request_tx(
+                RequestTxOptions(chain_id=84532, transaction=Transaction(to=TO, value=1), timeout_ms=5000)
+            )
+        assert dead_relay in str(exc.value)
 
     @pytest.mark.parametrize("mode", ["managed", "encrypted"])
     async def test_simulate_matches_js_sdk(

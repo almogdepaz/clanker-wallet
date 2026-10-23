@@ -143,7 +143,8 @@ export class ClankerWallet extends TypedEmitter {
       }
 
       ws.addEventListener('error', () => {
-        if (!settled) fail('relay connection error')
+        // node's WebSocket error event carries no cause, so name the url: a sandbox or firewall blocking it looks the same as an outage
+        if (!settled) fail(`relay connection error: could not reach ${relayUrl} (allow this host if you run in a sandbox or behind a firewall)`)
       })
 
       ws.addEventListener('close', () => {

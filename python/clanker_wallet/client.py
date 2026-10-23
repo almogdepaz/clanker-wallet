@@ -193,7 +193,9 @@ class ClankerWallet:
         except (TxRejectedError, TxError, TxTimeoutError, NotPairedError):
             raise
         except Exception as exc:
-            raise RelayError(f"relay connection error: {exc}") from exc
+            raise RelayError(
+                f"relay connection error: could not reach {relay_url} ({exc}; allow this host if you run in a sandbox or behind a firewall)"
+            ) from exc
 
     async def _ws_request(
         self,
