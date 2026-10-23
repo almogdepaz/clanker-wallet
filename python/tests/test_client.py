@@ -774,6 +774,28 @@ class TestWire:
         assert plaintext == EVM_PLAINTEXT
         assert frame["simulate"] == {"from": RECIPIENT, "to": TO, "value": "5", "data": "0xabcd", "chainId": 84532}
 
+    async def test_evm_request_with_explicit_evm_family_is_unchanged(
+        self, frozen: None, logging_relay: Tuple[str, List[Dict[str, Any]]]
+    ) -> None:
+        plaintext, _frame = await _capture(
+            logging_relay, {"wallet": RECIPIENT, "mode": "managed", "chain_family": "evm"}, _evm_request
+        )
+        assert plaintext == EVM_PLAINTEXT
+
+    @pytest.mark.parametrize("family", ["bitcoin", "chia"])
+    async def test_request_tx_rejects_a_non_evm_pairing_before_connecting(
+        self, logging_relay: Tuple[str, List[Dict[str, Any]]], family: str
+    ) -> None:
+        relay_url, log = logging_relay
+        agent = ClankerWallet()
+        agent.pair(
+            json.dumps({"version": 1, "pubkey": to_hex(generate_keypair().public_key), "relay": relay_url, "chain_family": family})
+        )
+        with pytest.raises(InvalidTxError) as exc:
+            await _evm_request(agent)
+        assert exc.value.field == "chain_family"
+        assert log == []
+
     async def test_chia_transfer(self, frozen: None, logging_relay: Tuple[str, List[Dict[str, Any]]]) -> None:
         plaintext, frame = await _capture(
             logging_relay,

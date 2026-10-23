@@ -94,6 +94,22 @@ describe('evm request wire format (characterization)', () => {
       simulate: { from: WALLET, to: TO, value: '5', data: '0xabcd', chainId: 84532 },
     })
   })
+
+  test('an explicit evm chain_family sends the same bytes', async () => {
+    freeze()
+    const { plaintext } = await capture(evmTx, { wallet: WALLET, chain_family: 'evm' })
+    expect(plaintext).toBe(EVM_PLAINTEXT)
+  })
+
+  test.each(['bitcoin', 'chia'])('rejects a %s pairing before connecting to the relay', async (family) => {
+    const agent = new ClankerWallet({ secretKey: AGENT_SECRET })
+    const room = toHex(nacl.box.keyPair().publicKey)
+    agent.pair(JSON.stringify({ version: 1, pubkey: room, relay: relay.url, chain_family: family }))
+    const err = await evmTx(agent).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(InvalidTxError)
+    expect((err as InvalidTxError).field).toBe('chain_family')
+    expect(relay.received.filter((m) => m.room === room)).toEqual([])
+  })
 })
 
 describe('transfer request wire format', () => {

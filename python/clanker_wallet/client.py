@@ -146,6 +146,12 @@ class ClankerWallet:
         if not self.paired:
             raise NotPairedError()
 
+        # a bitcoin or chia pairing takes transfers only: its wallet can't sign an evm tx
+        if self._chain_family not in (None, "evm"):
+            raise InvalidTxError(
+                "chain_family", f"this pairing is for {self._chain_family}: use request_transfer for bitcoin or chia"
+            )
+
         # reject malformed requests before anything reaches the relay
         chain_id, transaction = validate_tx(options.chain_id, options.transaction)
 

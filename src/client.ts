@@ -105,6 +105,12 @@ export class ClankerWallet extends TypedEmitter {
       throw new Error('not paired — call pair() first')
     }
 
+    // a bitcoin or chia pairing takes transfers only: its wallet can't sign an evm tx
+    const { chainFamily } = this.pairing
+    if (chainFamily && chainFamily !== 'evm') {
+      throw new InvalidTxError('chain_family', `this pairing is for ${chainFamily}: use requestTransfer for bitcoin or chia`)
+    }
+
     // reject malformed requests before anything reaches the relay
     const { chain_id, transaction } = validateTx(options.chain_id, options.transaction)
 
