@@ -51,7 +51,9 @@ clanker-wallet pair '{"version":1,"pubkey":"ab12...","relay":"wss://...","wallet
 
 If the human only pastes raw JSON (no prompt prose), pair with it directly. If they only paste the URL, ask them to click "copy prompt for agent" on the pairing screen.
 
-`pair` writes your identity and the pairing to `~/.clanker-wallet/`. You only need to do this once.
+`pair` writes your identity and the pairing to `~/.clanker-wallet/`. You only need to do this once per chain family.
+
+The web app has an evm, a bitcoin and a chia tab, and each tab gives its own pairing JSON (bitcoin and chia add `"chain_family":"bitcoin"` / `"chain_family":"chia"`). Pair each one you need: every family is kept in its own file, `~/.clanker-wallet/pairings/<family>.json` (`evm`, `bitcoin`, `chia`), so pairing one never replaces another. A `~/.clanker-wallet/pairing.json` written by clanker-wallet 0.4.x is still read as the evm pairing and is left untouched.
 
 If the JSON contains `"mode":"managed"`, the human chose managed mode: the relay simulates each transaction for the review screen, so `tx` also sends the plain transaction fields (from, to, value, data, chainId) to the relay, which shares them with its simulation provider. Without it (or with `"mode":"encrypted"`) the relay only sees ciphertext. Pair with the JSON exactly as given either way.
 
@@ -117,6 +119,21 @@ The command **blocks until the human approves or rejects**, for up to 1 hour by 
 | `--expected-outcome <text>` | no | — | What will happen |
 | `--timeout <ms>` | no | `3600000` (1 h) | How long `tx` blocks waiting for the human |
 
+## Sending Bitcoin or Chia
+
+Bitcoin and chia sends are transfers: you name the network, recipient and amount, and the human's wallet builds, signs and broadcasts the transaction. Pair the web app's bitcoin or chia tab first.
+
+```bash
+clanker-wallet send --btc testnet --to tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx --sats 1000 --reason "Send 1000 sats on bitcoin testnet"
+clanker-wallet send --xch testnet11 --to txch1qqqsyqcyq5rqwzqfpg9scrgwpugpzysnzs23v9ccrydpk8qarc0sw0amhg --mojos 1000 --fee-mojos 0 --reason "Send 1000 mojos on chia testnet11"
+```
+
+- **network:** `--btc mainnet|testnet|signet` or `--xch mainnet|testnet11`. There is no default network; the recipient must belong to it (`bc1...` on bitcoin mainnet, `tb1...` on testnet/signet, `xch1...` / `txch1...` on chia).
+- **bitcoin recipients are segwit addresses only** (`bc1q...`, `bc1p...`, `tb1...`); legacy `1...`/`3...` addresses are refused.
+- **amounts are whole base units**: `--sats` (1 BTC = `100000000`), `--mojos` (1 XCH = `1000000000000`). No decimals.
+- **fees:** bitcoin fees are set in the human's wallet. Chia takes `--fee-mojos` (default `0`), which the human sees before approving.
+- `--reason`, `--urgency`, `--expected-outcome` and `--timeout` work as for `tx`, and so do the output and exit codes. On approval `tx_hash` is the bitcoin txid or the chia transaction id. Exit code 4 means that chain family isn't paired.
+
 ## Common Chain IDs
 
 | Chain | ID |
@@ -165,7 +182,9 @@ clanker-wallet tx \
 ```bash
 # Check pairing status
 clanker-wallet status
-# → {"agent_id":"agent_abc123","paired":true,"wallet":"0x...","relay":"wss://..."}
+# → {"agent_id":"agent_abc123","paired":true,"wallet":"0x...","relay":"wss://...",
+#    "pairings":{"evm":{"wallet":"0x...","relay":"wss://...","mode":null,"chain_network":null},"chia":{"wallet":"xch1...",...}}}
+# wallet and relay are the evm pairing's; pairings lists every paired chain family
 
 # Show agent identity
 clanker-wallet whoami
@@ -175,7 +194,7 @@ clanker-wallet whoami
 ## Troubleshooting
 
 - **exit code 5 / "invalid --flag: ..."** — fix the named flag; nothing was sent. Usually a placeholder `--to`, a `--value` in ETH instead of wei, or `--data` that isn't even-length hex
-- **exit code 4 / "not paired"** — run `clanker-wallet pair '<JSON>'` first
+- **exit code 4 / "not paired"** — run `clanker-wallet pair '<JSON>'` first (for `send`, with the JSON from the web app's bitcoin or chia tab)
 - **exit code 2 / timeout** — human didn't respond in time, increase `--timeout` or ask them to check the web app
 - **exit code 1 / "rejected"** — human clicked reject. Explain why the tx is needed and try again if appropriate.
 - **exit code 3 / "relay connection error: could not reach wss://..."** — if you run in a sandbox or behind a firewall, allow that host (`relay.clanker-wallet.xyz` by default) and, if the error mentions it, rerun with `NODE_USE_ENV_PROXY=1` (see "Running in a sandbox"); otherwise the relay may be down or rate limiting, try again in a few seconds

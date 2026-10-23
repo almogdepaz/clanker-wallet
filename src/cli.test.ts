@@ -1,10 +1,12 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { mkdtempSync, mkdirSync, readFileSync, statSync, chmodSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, statSync, chmodSync, existsSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import nacl from 'tweetnacl'
+import { decryptMessage, encryptMessage, fromHex, toHex } from './crypto.js'
 import { startTestRelay, type TestRelay } from './testRelay.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -164,6 +166,175 @@ describe('cli tx', () => {
   })
 })
 
+describe('cli pairings per family', () => {
+  const WALLET = '0x1111111111111111111111111111111111111111'
+  const TO = '0x2222222222222222222222222222222222222222'
+  const TXCH = 'txch1qqqsyqcyq5rqwzqfpg9scrgwpugpzysnzs23v9ccrydpk8qarc0sw0amhg'
+  const BTC_TEST = 'tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx'
+  let relay: TestRelay
+
+  beforeAll(async () => { relay = await startTestRelay() })
+  afterAll(() => relay.close())
+
+  const pairingJson = (pubkey: string, extra: Record<string, unknown> = {}) =>
+    JSON.stringify({ version: 1, pubkey, relay: relay.url, wallet: WALLET, ...extra })
+
+  /** run the cli and return the first message it sends to `room` */
+  async function firstMessage(home: string, room: string, args: string[]) {
+    const child = spawn(process.execPath, [CLI, ...args, '--timeout', '10000'], { env: { ...process.env, HOME: home }, stdio: 'ignore' })
+    try {
+      return await vi.waitFor(() => {
+        const msg = relay.received.find((m) => m.type === 'message' && m.room === room)
+        if (!msg) throw new Error('cli has not sent the request yet')
+        return msg
+      }, { timeout: 10_000, interval: 50 })
+    } finally {
+      child.kill()
+    }
+  }
+
+  function send(home: string, ...args: string[]) {
+    return spawnSync(process.execPath, [CLI, 'send', ...args, '--timeout', '3000'], { env: { ...process.env, HOME: home }, encoding: 'utf8' })
+  }
+
+  it('stores each family in pairings/<family>.json and lists them all in status', () => {
+    const home = mkdtempSync(join(tmpdir(), 'clanker-cli-'))
+    const evm = randomBytes(32).toString('hex')
+    const chia = randomBytes(32).toString('hex')
+    runCli(home, 'pair', pairingJson(evm))
+    expect(JSON.parse(runCli(home, 'pair', pairingJson(chia, { wallet: 'xch1me', chain_family: 'chia' }))))
+      .toMatchObject({ status: 'paired', chain_family: 'chia', wallet: 'xch1me' })
+
+    const dir = join(home, '.clanker-wallet')
+    expect(JSON.parse(readFileSync(join(dir, 'pairings', 'evm.json'), 'utf8'))).toEqual({ pubkey: evm, relay: relay.url, wallet: WALLET, mode: null })
+    expect(JSON.parse(readFileSync(join(dir, 'pairings', 'chia.json'), 'utf8')))
+      .toEqual({ pubkey: chia, relay: relay.url, wallet: 'xch1me', mode: null, chain_family: 'chia' })
+    expect(existsSync(join(dir, 'pairing.json'))).toBe(false)
+
+    expect(JSON.parse(runCli(home, 'status'))).toMatchObject({
+      paired: true,
+      wallet: WALLET,
+      relay: relay.url,
+      pairings: {
+        evm: { wallet: WALLET, relay: relay.url, chain_network: null },
+        chia: { wallet: 'xch1me', relay: relay.url, chain_network: null },
+      },
+    })
+  })
+
+  it('reads a 0.4.x pairing.json as the evm pairing and never touches it', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'clanker-cli-'))
+    const legacyRoom = randomBytes(32).toString('hex')
+    const dir = join(home, '.clanker-wallet')
+    mkdirSync(dir, { mode: 0o700 })
+    const legacy = join(dir, 'pairing.json')
+    const legacyText = JSON.stringify({ pubkey: legacyRoom, relay: relay.url, wallet: WALLET, mode: null }, null, 2) + '\n'
+    writeFileSync(legacy, legacyText)
+
+    expect(JSON.parse(runCli(home, 'status'))).toMatchObject({ paired: true, wallet: WALLET, pairings: { evm: { wallet: WALLET } } })
+    runCli(home, 'pair', pairingJson(randomBytes(32).toString('hex'), { chain_family: 'bitcoin' }))
+    const msg = await firstMessage(home, legacyRoom, ['tx', '--chain', '84532', '--to', TO, '--value', '1'])
+    expect(msg.room).toBe(legacyRoom)
+    expect(readFileSync(legacy, 'utf8')).toBe(legacyText)
+  })
+
+  it('send --xch reaches the chia pairing with the transfer and no simulate object', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'clanker-cli-'))
+    const human = nacl.box.keyPair()
+    const room = toHex(human.publicKey)
+    runCli(home, 'pair', pairingJson(randomBytes(32).toString('hex'), { mode: 'managed' }))
+    runCli(home, 'pair', pairingJson(room, { wallet: 'xch1me', chain_family: 'chia', mode: 'managed' }))
+
+    const msg = await firstMessage(home, room, ['send', '--xch', 'testnet11', '--to', TXCH, '--mojos', '5', '--fee-mojos', '1', '--reason', 'pay', '--urgency', 'low'])
+    expect(msg.simulate).toBeUndefined()
+    const envelope = JSON.parse(msg.payload)
+    const req = JSON.parse(decryptMessage(envelope.ciphertext, fromHex(envelope.sender_pubkey), human.secretKey)!)
+    expect(req).toMatchObject({
+      chain_family: 'chia',
+      chain_network: 'testnet11',
+      transfer: { asset: 'xch', to: TXCH, amount: '5', fee: '1' },
+      context: { reason: 'pay', urgency: 'low' },
+    })
+    expect(req.chain_id).toBeUndefined()
+    expect(req.transaction).toBeUndefined()
+  })
+
+  it('send --btc prints the txid on approval (exit 0)', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'clanker-cli-'))
+    const human = nacl.box.keyPair()
+    const room = toHex(human.publicKey)
+    runCli(home, 'pair', pairingJson(room, { wallet: 'tb1me', chain_family: 'bitcoin' }))
+
+    const ws = new WebSocket(relay.url)
+    await new Promise((resolve) => ws.addEventListener('open', resolve, { once: true }))
+    ws.send(JSON.stringify({ type: 'join', room }))
+    ws.addEventListener('message', (event) => {
+      const frame = JSON.parse(event.data as string)
+      if (frame.type !== 'message') return
+      const envelope = JSON.parse(frame.payload)
+      if (envelope.sender_pubkey === room) return
+      const req = JSON.parse(decryptMessage(envelope.ciphertext, fromHex(envelope.sender_pubkey), human.secretKey)!)
+      const reply = { request_id: req.request_id, status: 'approved', tx_hash: 'ab'.repeat(32) }
+      ws.send(JSON.stringify({
+        type: 'message',
+        room,
+        payload: JSON.stringify({ sender_pubkey: room, ciphertext: encryptMessage(JSON.stringify(reply), fromHex(envelope.sender_pubkey), human.secretKey) }),
+      }))
+    })
+
+    try {
+      const child = spawn(process.execPath, [CLI, 'send', '--btc', 'testnet', '--to', BTC_TEST, '--sats', '1000', '--timeout', '10000'],
+        { env: { ...process.env, HOME: home } })
+      let stdout = ''
+      child.stdout.on('data', (d) => { stdout += d })
+      const code = await new Promise((resolve) => child.on('exit', resolve))
+      expect(code).toBe(0)
+      expect(JSON.parse(stdout)).toEqual({ tx_hash: 'ab'.repeat(32), status: 'approved' })
+    } finally {
+      ws.close()
+    }
+  })
+
+  it('send exits 4 when that family is not paired', () => {
+    const home = mkdtempSync(join(tmpdir(), 'clanker-cli-'))
+    runCli(home, 'pair', pairingJson(randomBytes(32).toString('hex')))
+    const res = send(home, '--xch', 'testnet11', '--to', TXCH, '--mojos', '5')
+    expect(res.status).toBe(4)
+    expect(res.stderr).toContain('chia')
+  })
+
+  it.each([
+    ['--btc', ['--btc', '--to', BTC_TEST, '--sats', '1']],
+    ['--btc', ['--btc', 'regtest', '--to', BTC_TEST, '--sats', '1']],
+    ['--xch', ['--btc', 'testnet', '--xch', 'testnet11', '--to', BTC_TEST, '--sats', '1']],
+    ['--to', ['--btc', 'mainnet', '--to', BTC_TEST, '--sats', '1']],
+    ['--to', ['--btc', 'testnet', '--to', '1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2', '--sats', '1']],
+    ['--sats', ['--btc', 'testnet', '--to', BTC_TEST, '--sats', '0.5']],
+    ['--sats', ['--btc', 'testnet', '--to', BTC_TEST]],
+    ['--mojos', ['--btc', 'testnet', '--to', BTC_TEST, '--sats', '1', '--mojos', '1']],
+    ['--fee-mojos', ['--btc', 'testnet', '--to', BTC_TEST, '--sats', '1', '--fee-mojos', '1']],
+    ['--sats', ['--xch', 'testnet11', '--to', TXCH, '--sats', '1']],
+    ['--to', ['--xch', 'mainnet', '--to', TXCH, '--mojos', '1']],
+    ['--fee-mojos', ['--xch', 'testnet11', '--to', TXCH, '--mojos', '1', '--fee-mojos', '-1']],
+    ['--xch', ['--xch', 'mainnet', '--to', 'xch1qqqsyqcyq5rqwzqfpg9scrgwpugpzysnzs23v9ccrydpk8qarc0srg6dkm', '--mojos', '1'], 'testnet11'],
+    ['--timeout', ['--xch', 'testnet11', '--to', TXCH, '--mojos', '1', '--timeout', 'soon']],
+  ])('send rejects a bad %s with exit 5 before contacting the relay', (flag, args, pairedNetwork?: string) => {
+    const home = mkdtempSync(join(tmpdir(), 'clanker-cli-'))
+    const btcRoom = randomBytes(32).toString('hex')
+    const chiaRoom = randomBytes(32).toString('hex')
+    runCli(home, 'pair', pairingJson(btcRoom, { chain_family: 'bitcoin' }))
+    runCli(home, 'pair', pairingJson(chiaRoom, { chain_family: 'chia', ...(pairedNetwork && { chain_network: pairedNetwork }) }))
+    const res = spawnSync(process.execPath, [CLI, 'send', ...args, ...(args.includes('--timeout') ? [] : ['--timeout', '3000'])], {
+      env: { ...process.env, HOME: home },
+      encoding: 'utf8',
+    })
+    expect(res.status).toBe(5)
+    expect(res.stderr.trim().split('\n')).toHaveLength(1)
+    expect(res.stderr).toContain(flag)
+    expect(relay.received.filter((m) => m.room === btcRoom || m.room === chiaRoom)).toEqual([])
+  })
+})
+
 describe('cli --help', () => {
   it('points at the agent skill and states the tx timeout', () => {
     const res = spawnSync(process.execPath, [CLI, '--help'], { encoding: 'utf8' })
@@ -173,6 +344,8 @@ describe('cli --help', () => {
     expect(res.stderr).toMatch(/--timeout <ms>.*1 h/)
     // same urgency names as the docs
     expect(res.stderr).toContain('--urgency <low|medium|high>')
+    expect(res.stderr).toContain('send --btc <mainnet|testnet|signet>')
+    expect(res.stderr).toContain('send --xch <mainnet|testnet11>')
   })
 })
 

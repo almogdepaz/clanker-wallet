@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { validateTx } from './validate.js'
+import { validateTransfer, validateTx } from './validate.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const read = (path: string) => readFileSync(join(ROOT, path), 'utf8')
@@ -10,10 +10,16 @@ const read = (path: string) => readFileSync(join(ROOT, path), 'utf8')
 // documented examples run on base sepolia
 const EXAMPLE_CHAIN = 84532
 
-/** every `clanker-wallet tx --...` command in a doc (not usage lines), backslash continuations joined */
-function cliTxExamples(text: string): string[] {
+// documented transfer examples run on the test networks
+const EXAMPLE_TRANSFER_NETWORK = { bitcoin: 'testnet', chia: 'testnet11' } as const
+
+/** every `clanker-wallet <command> --...` line in a doc (not usage lines), backslash continuations joined */
+function cliExamples(text: string, command: 'tx' | 'send'): string[] {
   const joined = text.replace(/\\\r?\n\s*/g, ' ')
-  return [...joined.matchAll(/clanker-wallet tx (--.*)/g)].map((m) => m[1].split('`')[0].trim())
+  return [...joined.matchAll(new RegExp(`clanker-wallet ${command} (--.*)`, 'g'))]
+    .map((m) => m[1].split('`')[0].trim())
+    // usage lines show placeholders: `send --btc <mainnet|testnet|signet>`
+    .filter((example) => !example.includes('<'))
 }
 
 /** --flag value pairs; double-quoted values may contain spaces */
@@ -31,7 +37,7 @@ const SDK_DOCS = ['README.md', 'llms-full.txt', 'python/README.md']
 
 describe('documented examples are runnable', () => {
   it.each(CLI_DOCS)('every cli tx example in %s passes validation on base sepolia', (doc) => {
-    const examples = cliTxExamples(read(doc))
+    const examples = cliExamples(read(doc), 'tx')
     expect(examples.length).toBeGreaterThan(0)
     for (const command of examples) {
       const flags = flagsOf(command)
@@ -41,14 +47,37 @@ describe('documented examples are runnable', () => {
     }
   })
 
-  it.each(SDK_DOCS)('every sdk example in %s uses a real address and base sepolia', (doc) => {
+  it.each(CLI_DOCS)('every cli send example in %s passes validation on a test network', (doc) => {
+    const examples = cliExamples(read(doc), 'send')
+    expect(examples.length).toBeGreaterThan(0)
+    for (const command of examples) {
+      const flags = flagsOf(command)
+      const family = flags.btc !== undefined ? 'bitcoin' : 'chia'
+      const network = flags.btc ?? flags.xch
+      expect(network, command).toBe(EXAMPLE_TRANSFER_NETWORK[family])
+      const transfer = family === 'bitcoin'
+        ? { asset: 'btc' as const, to: flags.to, amount: flags.sats }
+        : { asset: 'xch' as const, to: flags.to, amount: flags.mojos, fee: flags['fee-mojos'] }
+      expect(() => validateTransfer(family, network, transfer), command).not.toThrow()
+    }
+  })
+
+  it.each(SDK_DOCS)('every sdk example in %s uses a real address and base sepolia or a test network', (doc) => {
     const text = read(doc)
     const chains = [...text.matchAll(/chain_id[:=]\s*(\d+)/g)].map((m) => Number(m[1]))
     const recipients = [...text.matchAll(/\bto[:=]\s*['"]([^'"]*)['"]/g)].map((m) => m[1])
+    const networks = [...text.matchAll(/chain_network[:=]\s*['"]([^'"]*)['"]/g)].map((m) => m[1])
     expect(chains.length).toBeGreaterThan(0)
     expect(recipients.length).toBeGreaterThan(0)
+    expect(networks.length, 'documents requestTransfer/request_transfer').toBeGreaterThan(0)
     for (const chain of chains) expect(chain).toBe(EXAMPLE_CHAIN)
-    for (const to of recipients) expect(() => validateTx(EXAMPLE_CHAIN, { to, value: '0' }), to).not.toThrow()
+    for (const network of networks) expect(Object.values(EXAMPLE_TRANSFER_NETWORK)).toContain(network)
+    for (const to of recipients) {
+      // evm recipients are 0x addresses; the rest are transfer recipients on the documented test networks
+      if (to.startsWith('0x')) expect(() => validateTx(EXAMPLE_CHAIN, { to, value: '0' }), to).not.toThrow()
+      else if (to.startsWith('tb1')) expect(() => validateTransfer('bitcoin', 'testnet', { asset: 'btc', to, amount: '1' }), to).not.toThrow()
+      else expect(() => validateTransfer('chia', 'testnet11', { asset: 'xch', to, amount: '1' }), to).not.toThrow()
+    }
   })
 })
 
@@ -59,7 +88,7 @@ describe('documented contract', () => {
 
   it('python/README.md documents the PairingData mode and the int vs bigint value difference', () => {
     const text = read('python/README.md')
-    expect(text).toMatch(/PairingData\([^)]*mode: str \| None = None\)/)
+    expect(text).toMatch(/PairingData\([^)]*mode: str \| None = None[,)]/)
     expect(text).toMatch(/js sdk.*decimal string or `bigint`/i)
   })
 
@@ -74,6 +103,12 @@ describe('documented contract', () => {
     expect(text).toMatch(/allow writes/i)
     expect(text).toMatch(/"mode":\s?"managed"/)
     expect(text).toMatch(/in the background/)
+  })
+
+  it.each(['SKILL.md', 'README.md', 'llms-full.txt'])('%s documents per-family pairings and that 0.4.x pairing.json is still read', (doc) => {
+    const text = read(doc)
+    expect(text).toContain('~/.clanker-wallet/pairings/')
+    expect(text).toContain('pairing.json')
   })
 
   it.each(['python/README.md', 'bin/cli.js'])('%s names the relay host to allow', (doc) => {

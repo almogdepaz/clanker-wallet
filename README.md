@@ -1,6 +1,6 @@
 # clanker-wallet
 
-Human-approved blockchain transactions for AI agents. Agent proposes a tx, human reviews and signs it from the [web app](https://clanker-wallet.xyz). All communication is end-to-end encrypted.
+Human-approved blockchain transactions for AI agents. Agent proposes a tx, human reviews and signs it from the [web app](https://clanker-wallet.xyz). All communication is end-to-end encrypted. EVM chains take raw transactions; bitcoin and chia take transfers (network, recipient, amount) that the human's wallet builds.
 
 ## Install
 
@@ -36,7 +36,7 @@ clanker-wallet status
 
 ### `pair`
 
-Pair with a human's web app. Run once — `pair` writes identity and pairing to `~/.clanker-wallet/`.
+Pair with a human's web app. Run once per chain family — `pair` writes identity and pairing to `~/.clanker-wallet/`. The web app's bitcoin and chia tabs give pairing JSON with `"chain_family":"bitcoin"` / `"chain_family":"chia"`; each family is kept in its own file, so pairing one never replaces another.
 
 If the pairing JSON contains `"mode":"managed"`, the relay simulates each transaction for the human's review screen, so `tx` also sends the plain transaction fields to it. Otherwise the relay only sees ciphertext. Pair with the JSON as given.
 
@@ -78,13 +78,33 @@ clanker-wallet tx \
 | `--expected-outcome <text>` | no | — | What will happen |
 | `--timeout <ms>` | no | `3600000` (1 h) | How long `tx` blocks waiting for the human |
 
+### `send`
+
+Send bitcoin or chia. The human's wallet builds, signs and broadcasts the transaction; you give the network, recipient and amount. Needs a pairing from the web app's bitcoin or chia tab. Same blocking, `--reason`/`--urgency`/`--expected-outcome`/`--timeout`, output and exit codes as `tx`; exit code 4 means that chain family isn't paired.
+
+```bash
+clanker-wallet send --btc testnet --to tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx --sats 1000 --reason "send 1000 sats on bitcoin testnet"
+clanker-wallet send --xch testnet11 --to txch1qqqsyqcyq5rqwzqfpg9scrgwpugpzysnzs23v9ccrydpk8qarc0sw0amhg --mojos 1000 --fee-mojos 0 --reason "send 1000 mojos on chia testnet11"
+# approved → {"tx_hash":"<bitcoin txid or chia transaction id>","status":"approved"}
+```
+
+| Flag | Required | Default | Description |
+|------|----------|---------|-------------|
+| `--btc <network>` | one of `--btc`/`--xch` | — | `mainnet`, `testnet` or `signet` |
+| `--xch <network>` | one of `--btc`/`--xch` | — | `mainnet` or `testnet11` |
+| `--to <address>` | yes | — | On that network: segwit `bc1...`/`tb1...` (no legacy `1...`/`3...`), or `xch1...`/`txch1...` |
+| `--sats <n>` | with `--btc` | — | Whole sats (1 BTC = `100000000`); the wallet sets the fee |
+| `--mojos <n>` | with `--xch` | — | Whole mojos (1 XCH = `1000000000000`) |
+| `--fee-mojos <n>` | no (chia only) | `0` | Chia fee, shown to the human |
+
 ### `status`
 
-Check current pairing status.
+Check current pairing status. `wallet` and `relay` are the evm pairing's; `pairings` lists every paired chain family.
 
 ```bash
 clanker-wallet status
-# → {"agent_id":"agent_abc123","paired":true,"wallet":"0x...","relay":"wss://..."}
+# → {"agent_id":"agent_abc123","paired":true,"wallet":"0x...","relay":"wss://...",
+#    "pairings":{"evm":{"wallet":"0x...","relay":"wss://...","mode":null,"chain_network":null}}}
 ```
 
 ### `whoami`
@@ -104,7 +124,7 @@ clanker-wallet whoami
 | 1 | Rejected by human |
 | 2 | Timeout |
 | 3 | Connection/relay error |
-| 4 | Not paired |
+| 4 | Not paired (`send`: not paired for that chain family) |
 | 5 | Invalid arguments (bad or missing flag; nothing sent) |
 
 ## State
@@ -113,9 +133,14 @@ Identity and pairing are persisted in `~/.clanker-wallet/`:
 
 ```
 ~/.clanker-wallet/
-  identity.json    # agent keypair (auto-generated on first use)
-  pairing.json     # human's public key + relay URL
+  identity.json        # agent keypair (auto-generated on first use)
+  pairings/evm.json    # per chain family: human's public key + relay URL
+  pairings/bitcoin.json
+  pairings/chia.json
+  pairing.json         # written by 0.4.x; still read as the evm pairing, never changed
 ```
+
+`~/.clanker-wallet/pairings/<family>.json` takes precedence over a 0.4.x `pairing.json`, which is never moved, rewritten or deleted.
 
 ## Common Chain IDs
 
@@ -155,6 +180,19 @@ const txHash = await wallet.requestTx({
 
 `requestTx` throws `InvalidTxError` (with `field` and `reason`) before anything is sent if `chain_id`, `to`, `value` or `data` is malformed.
 
+With a bitcoin or chia pairing, use `requestTransfer`; the family comes from the pairing:
+
+```typescript
+// 1000 mojos on chia testnet11; amount and fee are integer strings or bigints
+const txId = await wallet.requestTransfer({
+  chain_network: 'testnet11',
+  transfer: { asset: 'xch', to: 'txch1qqqsyqcyq5rqwzqfpg9scrgwpugpzysnzs23v9ccrydpk8qarc0sw0amhg', amount: '1000', fee: '0' },
+  context: { reason: 'send 1000 mojos on chia testnet11' },
+})
+```
+
+It throws `InvalidTxError` before sending for an evm pairing, an unknown network, a recipient from another network, a non-integer amount, or a bitcoin `fee` (the wallet sets bitcoin fees). Chia `fee` defaults to `"0"`.
+
 See full API: [`src/`](./src/)
 
 ## Python SDK
@@ -176,13 +214,21 @@ tx_hash = await agent.request_tx(RequestTxOptions(
     transaction=Transaction(to="0x000000000000000000000000000000000000dEaD", value="1000000000000000", data="0x"),
     context=TxContext(reason="send 0.001 ETH on base sepolia"),
 ))
+
+# with a bitcoin pairing: 1000 sats on bitcoin testnet
+from clanker_wallet import RequestTransferOptions, Transfer
+
+txid = await agent.request_transfer(RequestTransferOptions(
+    chain_network="testnet",
+    transfer=Transfer(asset="btc", to="tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx", amount=1000),
+))
 ```
 
 ## How It Works
 
 1. Human opens [clanker-wallet.xyz](https://clanker-wallet.xyz), connects wallet, clicks "copy prompt for agent" — gets a paste-ready prompt that bundles intent, the setup guide URL, and the pairing JSON
 2. Human pastes the prompt to their AI agent. Agent extracts the JSON and runs `clanker-wallet pair` — establishes E2E encrypted channel
-3. Agent runs `clanker-wallet tx` — encrypts tx with nacl.box, sends via WebSocket relay
+3. Agent runs `clanker-wallet tx` (or `send` for bitcoin/chia) — encrypts the request with nacl.box, sends via WebSocket relay
 4. Human reviews tx details, simulation, risk flags in the web app. A new agent shows up as unverified with its fingerprint; auto-approve rules only apply after the human trusts it. Contract rules (address + methods) don't limit token amounts or recipients
 5. Human approves → wallet signs + broadcasts → agent gets the tx hash
 
