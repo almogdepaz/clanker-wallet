@@ -1,9 +1,15 @@
-import { describe, test, expect, beforeAll, afterAll } from 'vitest'
+import { describe, test, expect, beforeAll, afterAll, vi } from 'vitest'
 import nacl from 'tweetnacl'
 import { ClankerWallet } from './client.js'
 import { encryptMessage, decryptMessage, toHex, fromHex } from './crypto.js'
 import type { AgentEnvelope, TxRequest, TxResponse } from './types.js'
 import { startTestRelay, type TestRelay } from './testRelay.js'
+import { InvalidTxError } from './validate.js'
+
+const RECIPIENT = '0x1111111111111111111111111111111111111111'
+const TO = '0x2222222222222222222222222222222222222222'
+/** distinctive address the opacity test looks for in relay traffic */
+const SECRET_TO = '0x5ec2e75ec2e75ec2e75ec2e75ec2e75ec2e75ec2'
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms))
@@ -163,8 +169,28 @@ describe('ClankerWallet SDK', () => {
     const wallet = new ClankerWallet()
     await expect(wallet.requestTx({
       chain_id: 1,
-      transaction: { to: '0x0', value: '0', data: '0x' },
+      transaction: { to: RECIPIENT, value: '0', data: '0x' },
     })).rejects.toThrow('not paired')
+  })
+
+  test('requestTx() rejects an invalid tx before connecting to the relay', async () => {
+    const humanPubkeyHex = toHex(nacl.box.keyPair().publicKey)
+    const agent = new ClankerWallet()
+    agent.pair(JSON.stringify({ version: 1, pubkey: humanPubkeyHex, relay: relayUrl, wallet: RECIPIENT, mode: 'managed' }))
+    const connecting = vi.fn()
+    agent.on('connecting', connecting)
+
+    // the llms.txt quick-start placeholder from the prod e2e report
+    const err = await agent.requestTx({
+      chain_id: 1,
+      transaction: { to: '0x...', value: '0', data: '0x' },
+      timeout_ms: 10000,
+    }).catch((e: unknown) => e)
+
+    expect(err).toBeInstanceOf(InvalidTxError)
+    expect((err as InvalidTxError).field).toBe('to')
+    expect(connecting).not.toHaveBeenCalled()
+    expect(relay.received.filter((m) => m.room === humanPubkeyHex)).toEqual([])
   })
 
   test('full flow: agent sends tx request, human approves', async () => {
@@ -194,7 +220,7 @@ describe('ClankerWallet SDK', () => {
     const txHash = await agent.requestTx({
       chain_id: 11155111,
       transaction: {
-        to: '0xrecipient',
+        to: RECIPIENT,
         value: '1000000000000000',
         data: '0x',
       },
@@ -208,7 +234,7 @@ describe('ClankerWallet SDK', () => {
     expect(txHash).toBe('0xdeadbeef1234')
     expect(received).toHaveLength(1)
     expect(received[0].chain_id).toBe(11155111)
-    expect(received[0].transaction.to).toBe('0xrecipient')
+    expect(received[0].transaction.to).toBe(RECIPIENT)
     expect(received[0].context?.reason).toBe('test transfer')
     expect(received[0].agent_id).toBe(agent.agentId)
 
@@ -238,7 +264,7 @@ describe('ClankerWallet SDK', () => {
 
     await expect(agent.requestTx({
       chain_id: 1,
-      transaction: { to: '0xrecipient', value: '0', data: '0x' },
+      transaction: { to: RECIPIENT, value: '0', data: '0x' },
       timeout_ms: 10000,
     })).rejects.toThrow('rejected by human')
 
@@ -266,7 +292,7 @@ describe('ClankerWallet SDK', () => {
 
     await expect(agent.requestTx({
       chain_id: 1,
-      transaction: { to: '0x0', value: '0', data: '0x' },
+      transaction: { to: RECIPIENT, value: '0', data: '0x' },
       timeout_ms: 1500,
     })).rejects.toThrow('timed out')
 
@@ -308,7 +334,7 @@ describe('ClankerWallet SDK', () => {
 
     await agent.requestTx({
       chain_id: 1,
-      transaction: { to: '0xsecret', value: '999', data: '0xdeadbeef' },
+      transaction: { to: SECRET_TO, value: '999', data: '0xdeadbeef' },
       timeout_ms: 10000,
     })
 
@@ -320,7 +346,7 @@ describe('ClankerWallet SDK', () => {
       .map((m) => m.payload)
 
     for (const payload of payloads) {
-      expect(payload).not.toContain('0xsecret')
+      expect(payload).not.toContain(SECRET_TO)
       expect(payload).not.toContain('0xdeadbeef')
       // should be AgentEnvelope with ciphertext
       const env: AgentEnvelope = JSON.parse(payload)
@@ -368,7 +394,7 @@ describe('ClankerWallet SDK', () => {
 
     const txHash = await agent.requestTx({
       chain_id: 1,
-      transaction: { to: '0xrecipient', value: '1', data: '0x' },
+      transaction: { to: RECIPIENT, value: '1', data: '0x' },
       timeout_ms: 10000,
     })
 
@@ -400,7 +426,7 @@ describe('ClankerWallet SDK', () => {
 
     await agent.requestTx({
       chain_id: 8453,
-      transaction: { to: '0xto', value: '42', data: '0xabcd' },
+      transaction: { to: TO, value: '42', data: '0xabcd' },
       timeout_ms: 10000,
     })
 
@@ -409,10 +435,44 @@ describe('ClankerWallet SDK', () => {
     expect(fromAgent).toHaveLength(1)
     expect(fromAgent[0].simulate).toEqual({
       from: '0xhumanwallet',
-      to: '0xto',
+      to: TO,
       value: '42',
       data: '0xabcd',
       chainId: 8453,
+    })
+
+    humanWs.close()
+  })
+
+  test('a bigint value reaches the human and the simulator as the same decimal string', async () => {
+    const humanKeypair = nacl.box.keyPair()
+    const humanPubkeyHex = toHex(humanKeypair.publicKey)
+
+    const { ws: humanWs, received } = await simulateHuman(
+      humanKeypair,
+      relayUrl,
+      (req) => ({ request_id: req.request_id, status: 'approved' as const, tx_hash: '0xbig' }),
+    )
+
+    const agent = new ClankerWallet()
+    agent.pair(JSON.stringify({ version: 1, pubkey: humanPubkeyHex, relay: relayUrl, wallet: RECIPIENT, mode: 'managed' }))
+
+    await agent.requestTx({
+      chain_id: 84532,
+      transaction: { to: TO, value: 10n ** 18n },
+      timeout_ms: 10000,
+    })
+
+    expect(received[0].transaction).toEqual({ to: TO, value: '1000000000000000000', data: '0x' })
+    const fromAgent = relay.received.filter((m) =>
+      m.type === 'message' && m.room === humanPubkeyHex &&
+      JSON.parse(m.payload).sender_pubkey === toHex(agent.publicKey))
+    expect(fromAgent[0].simulate).toEqual({
+      from: RECIPIENT,
+      to: TO,
+      value: '1000000000000000000',
+      data: '0x',
+      chainId: 84532,
     })
 
     humanWs.close()
@@ -433,7 +493,7 @@ describe('ClankerWallet SDK', () => {
 
     await agent.requestTx({
       chain_id: 1,
-      transaction: { to: '0xto', value: '1', data: '0x' },
+      transaction: { to: TO, value: '1', data: '0x' },
       timeout_ms: 10000,
     })
 

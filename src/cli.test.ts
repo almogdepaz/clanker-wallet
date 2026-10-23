@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
-import { execFileSync, spawn } from 'node:child_process'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { mkdtempSync, mkdirSync, statSync, chmodSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, statSync, chmodSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -102,5 +102,42 @@ describe('cli tx', () => {
   it('sends no simulate fields for an encrypted pairing', async () => {
     const msg = await sentMessage('encrypted')
     expect(msg.simulate).toBeUndefined()
+  })
+
+  // the two literal requests from the prod e2e report, plus the other per-flag rules
+  it.each([
+    ['--to', ['--chain', '1', '--to', '0x...', '--value', '0']],
+    ['--data', ['--chain', '1', '--to', '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', '--data',
+      '0xa9059cbb000000000000000000000000RecipientAddr00000000000000000000000000000000000000000000000000000000000f4240']],
+    ['--to', ['--chain', '1', '--to', '--value', '0']],
+    ['--to', ['--chain', '1', '--to', '0xa0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48']],
+    ['--value', ['--chain', '1', '--to', TO, '--value', '0.5']],
+    ['--value', ['--chain', '1', '--to', TO, '--value', '1e18']],
+    ['--chain', ['--chain', '8453abc', '--to', TO]],
+    ['--chain', ['--chain', '0', '--to', TO]],
+    ['--timeout', ['--chain', '1', '--to', TO, '--timeout', 'soon']],
+  ])('rejects a bad %s with exit 5 before contacting the relay', (flag, args) => {
+    const home = mkdtempSync(join(tmpdir(), 'clanker-cli-'))
+    const human = randomBytes(32).toString('hex')
+    runCli(home, 'pair', JSON.stringify({ version: 1, pubkey: human, relay: relay.url, wallet: WALLET, mode: 'managed' }))
+    // short timeout so an accepted request fails fast instead of waiting for a human
+    const timeout = args.includes('--timeout') ? [] : ['--timeout', '3000']
+    const res = spawnSync(process.execPath, [CLI, 'tx', ...args, ...timeout], {
+      env: { ...process.env, HOME: home },
+      encoding: 'utf8',
+    })
+    expect(res.status).toBe(5)
+    expect(res.stderr.trim().split('\n')).toHaveLength(1)
+    expect(res.stderr).toContain(flag)
+    expect(relay.received.filter((m) => m.room === human)).toEqual([])
+  })
+})
+
+describe('cli --version', () => {
+  it.each(['--version', '-v'])('%s prints the package version', (flag) => {
+    const { version } = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
+    const res = spawnSync(process.execPath, [CLI, flag], { encoding: 'utf8' })
+    expect(res.status).toBe(0)
+    expect(res.stdout.trim()).toBe(version)
   })
 })

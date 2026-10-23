@@ -7,7 +7,7 @@ AgentEnvelope, PairingData.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union
 
 
 @dataclass(slots=True)
@@ -15,8 +15,8 @@ class Transaction:
     """Transaction to send on-chain."""
 
     to: str
-    value: str  # wei string
-    data: str  # hex-encoded calldata
+    value: Union[str, int]  # wei, as a decimal string or int; sent as a decimal string
+    data: str = "0x"  # hex-encoded calldata
 
 
 @dataclass(slots=True)
@@ -68,6 +68,8 @@ class PairingData:
     pubkey: str  # human's x25519 pubkey (hex)
     relay: str  # ws:// relay URL
     wallet: str  # 0x... address
+    # "encrypted" (default): relay sees only ciphertext. "managed": relay also receives tx params for simulation.
+    mode: Optional[str] = None
 
 
 @dataclass(slots=True)

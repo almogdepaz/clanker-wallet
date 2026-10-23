@@ -44,3 +44,15 @@ class PairingError(ClankerError):
 
 class RelayError(ClankerError):
     """Raised on relay connection errors."""
+
+
+class InvalidTxError(ClankerError, ValueError):
+    """Raised by request_tx before anything is sent when a tx field is malformed.
+
+    ``field`` is one of "chain_id", "to", "value", "data".
+    """
+
+    def __init__(self, field: str, reason: str) -> None:
+        self.field = field
+        self.reason = reason
+        super().__init__(f"invalid {field}: {reason}")

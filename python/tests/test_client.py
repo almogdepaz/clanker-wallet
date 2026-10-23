@@ -28,6 +28,7 @@ from clanker_wallet.crypto import (
     to_hex,
 )
 from clanker_wallet.errors import (
+    InvalidTxError,
     NotPairedError,
     PairingError,
     TxRejectedError,
@@ -42,6 +43,10 @@ from clanker_wallet.types import (
 PORT = 9878
 RELAY_URL = f"ws://localhost:{PORT}/ws"
 RELAY_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "relay"))
+
+RECIPIENT = "0x1111111111111111111111111111111111111111"
+TO = "0x2222222222222222222222222222222222222222"
+SECRET_TO = "0x5ec2e75ec2e75ec2e75ec2e75ec2e75ec2e75ec2"
 
 
 # ---------------------------------------------------------------------------
@@ -84,18 +89,21 @@ def relay_server() -> Generator[subprocess.Popen[bytes], None, None]:
 
 
 @pytest.fixture
-async def inprocess_relay() -> Any:
+async def logging_relay() -> Any:
     """Minimal in-process relay (join room, broadcast to the other members).
 
-    Yields the relay ws url. Self-contained: no external relay checkout needed.
+    Yields (ws url, every message the relay received, as sent).
+    Self-contained: no external relay checkout needed.
     """
     rooms: Dict[str, set[Any]] = {}
+    log: List[Dict[str, Any]] = []
 
     async def handler(conn: Any) -> None:
         room: Optional[str] = None
         try:
             async for raw in conn:
                 msg = json.loads(raw)
+                log.append(msg)
                 if msg.get("type") == "join":
                     room = msg["room"]
                     rooms.setdefault(room, set()).add(conn)
@@ -113,7 +121,12 @@ async def inprocess_relay() -> Any:
 
     async with websockets.asyncio.server.serve(handler, "127.0.0.1", 0) as server:
         port = next(iter(server.sockets)).getsockname()[1]
-        yield f"ws://127.0.0.1:{port}/ws"
+        yield f"ws://127.0.0.1:{port}/ws", log
+
+
+@pytest.fixture
+def inprocess_relay(logging_relay: Tuple[str, List[Dict[str, Any]]]) -> str:
+    return logging_relay[0]
 
 
 async def post_response(
@@ -263,7 +276,7 @@ class TestClankerWalletUnit:
             await wallet.request_tx(
                 RequestTxOptions(
                     chain_id=1,
-                    transaction=Transaction(to="0x0", value="0", data="0x"),
+                    transaction=Transaction(to=TO, value="0", data="0x"),
                 )
             )
 
@@ -320,7 +333,7 @@ class TestClankerWalletIntegration:
             tx_hash = await agent.request_tx(
                 RequestTxOptions(
                     chain_id=1,
-                    transaction=Transaction(to="0xrecipient", value="1", data="0x"),
+                    transaction=Transaction(to=RECIPIENT, value="1", data="0x"),
                     timeout_ms=10000,
                 )
             )
@@ -363,7 +376,7 @@ class TestClankerWalletIntegration:
                 RequestTxOptions(
                     chain_id=11155111,
                     transaction=Transaction(
-                        to="0xrecipient",
+                        to=RECIPIENT,
                         value="1000000000000000",
                         data="0x",
                     ),
@@ -377,7 +390,7 @@ class TestClankerWalletIntegration:
             await asyncio.sleep(0.2)
             assert len(received) == 1
             assert received[0]["chain_id"] == 11155111
-            assert received[0]["transaction"]["to"] == "0xrecipient"
+            assert received[0]["transaction"]["to"] == RECIPIENT
             assert received[0]["context"]["reason"] == "test transfer"
             assert received[0]["agent_id"] == agent.agent_id
         finally:
@@ -414,7 +427,7 @@ class TestClankerWalletIntegration:
                 await agent.request_tx(
                     RequestTxOptions(
                         chain_id=1,
-                        transaction=Transaction(to="0xrecipient", value="0", data="0x"),
+                        transaction=Transaction(to=RECIPIENT, value="0", data="0x"),
                         timeout_ms=10000,
                     )
                 )
@@ -450,7 +463,7 @@ class TestClankerWalletIntegration:
                 await agent.request_tx(
                     RequestTxOptions(
                         chain_id=1,
-                        transaction=Transaction(to="0x0", value="0", data="0x"),
+                        transaction=Transaction(to=TO, value="0", data="0x"),
                         timeout_ms=1500,
                     )
                 )
@@ -509,7 +522,7 @@ class TestClankerWalletIntegration:
                 RequestTxOptions(
                     chain_id=1,
                     transaction=Transaction(
-                        to="0xsecret",
+                        to=SECRET_TO,
                         value="999",
                         data="0xdeadbeef",
                     ),
@@ -529,7 +542,7 @@ class TestClankerWalletIntegration:
             assert len(payloads) > 0, "expected relay messages"
 
             for payload in payloads:
-                assert "0xsecret" not in payload
+                assert SECRET_TO not in payload
                 assert "0xdeadbeef" not in payload
                 # should be AgentEnvelope with ciphertext
                 env = json.loads(payload)
@@ -540,3 +553,92 @@ class TestClankerWalletIntegration:
             spy_task.cancel()
             await ws.close()
             await spy_ws.close()
+
+
+# ---------------------------------------------------------------------------
+# Validation + managed-mode simulate (mirrors src/client.test.ts)
+# ---------------------------------------------------------------------------
+
+
+def _pair(agent: ClankerWallet, relay_url: str, human_pubkey_hex: str, mode: Optional[str]) -> None:
+    agent.pair(
+        json.dumps(
+            {"version": 1, "pubkey": human_pubkey_hex, "relay": relay_url, "wallet": RECIPIENT, "mode": mode}
+        )
+    )
+
+
+class TestRequestTxValidation:
+    def test_pair_returns_mode(self) -> None:
+        data = ClankerWallet().pair(
+            json.dumps({"version": 1, "pubkey": "aa", "relay": "ws://x", "mode": "managed"})
+        )
+        assert data.mode == "managed"
+
+    @pytest.mark.parametrize(
+        "tx,field",
+        [
+            # the two literal requests from the prod e2e report
+            (Transaction(to="0x...", value="0"), "to"),
+            (
+                Transaction(
+                    to="0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+                    value="0",
+                    data="0xa9059cbb000000000000000000000000RecipientAddr00000000000000000000000000000000000000000000000000000000000f4240",
+                ),
+                "data",
+            ),
+        ],
+    )
+    async def test_rejects_before_sending(
+        self, logging_relay: Tuple[str, List[Dict[str, Any]]], tx: Transaction, field: str
+    ) -> None:
+        relay_url, log = logging_relay
+        human_pubkey_hex = to_hex(generate_keypair().public_key)
+        agent = ClankerWallet()
+        _pair(agent, relay_url, human_pubkey_hex, "managed")
+
+        with pytest.raises(InvalidTxError) as exc:
+            await agent.request_tx(RequestTxOptions(chain_id=1, transaction=tx, timeout_ms=2000))
+        assert exc.value.field == field
+        assert log == []
+
+    @pytest.mark.parametrize("mode", ["managed", "encrypted"])
+    async def test_simulate_matches_js_sdk(
+        self, logging_relay: Tuple[str, List[Dict[str, Any]]], mode: str
+    ) -> None:
+        """managed mode sends the normalized tx as `simulate`, the same object src/client.ts sends."""
+        relay_url, log = logging_relay
+        human_kp = generate_keypair()
+        human_pubkey_hex = to_hex(human_kp.public_key)
+
+        def respond(req: Dict[str, Any], _agent_pub: str) -> Dict[str, Any]:
+            return {"request_id": req["request_id"], "status": "approved", "tx_hash": "0xabc"}
+
+        ws, received, listener_task = await simulate_human(human_kp, relay_url, respond)
+        try:
+            agent = ClankerWallet()
+            _pair(agent, relay_url, human_pubkey_hex, mode)
+            await agent.request_tx(
+                RequestTxOptions(
+                    chain_id=84532,
+                    transaction=Transaction(to=TO, value=10**18),
+                    timeout_ms=10000,
+                )
+            )
+            sent = [m for m in log if m.get("type") == "message"]
+            agent_msg = next(m for m in sent if json.loads(m["payload"]).get("signing_pubkey"))
+            if mode == "managed":
+                assert agent_msg["simulate"] == {
+                    "from": RECIPIENT,
+                    "to": TO,
+                    "value": "1000000000000000000",
+                    "data": "0x",
+                    "chainId": 84532,
+                }
+            else:
+                assert "simulate" not in agent_msg
+            assert received[0]["transaction"] == {"to": TO, "value": "1000000000000000000", "data": "0x"}
+        finally:
+            listener_task.cancel()
+            await ws.close()

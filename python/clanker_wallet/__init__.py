@@ -18,6 +18,7 @@ from .crypto import (
 )
 from .errors import (
     ClankerError,
+    InvalidTxError,
     NotPairedError,
     TxRejectedError,
     TxTimeoutError,
@@ -34,6 +35,7 @@ from .types import (
     PairingData,
     RequestTxOptions,
 )
+from .validate import is_checksum_address, validate_tx
 
 __all__ = [
     "__version__",
@@ -47,6 +49,9 @@ __all__ = [
     "AgentEnvelope",
     "PairingData",
     "RequestTxOptions",
+    # validation
+    "validate_tx",
+    "is_checksum_address",
     # crypto
     "generate_keypair",
     "keypair_from_secret",
@@ -61,6 +66,7 @@ __all__ = [
     "base64_to_bytes",
     # errors
     "ClankerError",
+    "InvalidTxError",
     "NotPairedError",
     "TxRejectedError",
     "TxTimeoutError",

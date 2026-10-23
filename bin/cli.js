@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { ClankerWallet } from '../dist/index.js'
+import { ClankerWallet, InvalidTxError, validateTx } from '../dist/index.js'
 import { readFileSync, writeFileSync, mkdirSync, existsSync, chmodSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
@@ -10,6 +10,9 @@ const IDENTITY_FILE = join(STATE_DIR, 'identity.json')
 const PAIRING_FILE = join(STATE_DIR, 'pairing.json')
 
 const EXIT = { OK: 0, REJECTED: 1, TIMEOUT: 2, CONNECTION: 3, NOT_PAIRED: 4, BAD_ARGS: 5 }
+const DEFAULT_TIMEOUT_MS = 3_600_000
+/** validateTx field -> the tx flag that sets it */
+const FIELD_FLAGS = { chain_id: '--chain', to: '--to', value: '--value', data: '--data' }
 
 // ── helpers ──────────────────────────────────────────────────────────
 const hex = (bytes) => Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('')
@@ -135,12 +138,20 @@ async function cmdTx(flags) {
   if (!chain) die('missing --chain', EXIT.BAD_ARGS)
   if (!to) die('missing --to', EXIT.BAD_ARGS)
 
-  const chainId = parseInt(chain, 10)
-  if (isNaN(chainId)) die('--chain must be a number', EXIT.BAD_ARGS)
+  if (!/^[0-9]+$/.test(chain)) die(`invalid --chain: must be a positive integer chain id, got ${JSON.stringify(chain)}`, EXIT.BAD_ARGS)
+  if (flags.timeout !== undefined && !/^[1-9][0-9]*$/.test(flags.timeout)) {
+    die(`invalid --timeout: must be a positive number of milliseconds, got ${JSON.stringify(flags.timeout)}`, EXIT.BAD_ARGS)
+  }
+  const timeout = flags.timeout ? Number(flags.timeout) : DEFAULT_TIMEOUT_MS
 
-  const value = flags.value || '0'
-  const data = flags.data || '0x'
-  const timeout = flags.timeout ? parseInt(flags.timeout, 10) : 3_600_000
+  // same checks requestTx runs, done here so a bad flag exits 5 instead of surfacing as a connection error
+  let request
+  try {
+    request = validateTx(Number(chain), { to, value: flags.value ?? '0', data: flags.data ?? '0x' })
+  } catch (err) {
+    if (!(err instanceof InvalidTxError)) throw err
+    die(`invalid ${FIELD_FLAGS[err.field]}: ${err.reason}`, EXIT.BAD_ARGS)
+  }
 
   const context = {}
   if (flags.reason) context.reason = flags.reason
@@ -159,8 +170,8 @@ async function cmdTx(flags) {
 
   try {
     const txHash = await wallet.requestTx({
-      chain_id: chainId,
-      transaction: { to, value, data },
+      chain_id: request.chain_id,
+      transaction: request.transaction,
       context: Object.keys(context).length > 0 ? context : undefined,
       timeout_ms: timeout,
     })
@@ -200,6 +211,11 @@ function cmdWhoami() {
     public_key: hex(wallet.publicKey),
     fingerprint: fingerprint(hex(wallet.publicKey)),
   })
+}
+
+function cmdVersion() {
+  const { version } = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+  process.stdout.write(version + '\n')
 }
 
 function showHelp() {
@@ -255,6 +271,10 @@ switch (cmd) {
     break
   case 'whoami':
     cmdWhoami()
+    break
+  case '--version':
+  case '-v':
+    cmdVersion()
     break
   case 'help':
   case '--help':

@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from typing import Optional
+from typing import Any, Dict, Optional
 
 import websockets
 import websockets.asyncio.client
@@ -40,6 +40,7 @@ from .types import (
     TxResponse,
     _tx_request_to_dict,
 )
+from .validate import validate_tx
 
 _DEFAULT_TIMEOUT_MS = 3_600_000  # 1 hour
 
@@ -52,8 +53,8 @@ class ClankerWallet:
         wallet = ClankerWallet()
         wallet.pair(qr_json)
         tx_hash = await wallet.request_tx(RequestTxOptions(
-            chain_id=1,
-            transaction=Transaction(to="0x...", value="0", data="0x"),
+            chain_id=84532,  # base sepolia
+            transaction=Transaction(to="0x000000000000000000000000000000000000dEaD", value="1000"),
         ))
     """
 
@@ -83,6 +84,7 @@ class ClankerWallet:
         self._human_pubkey_hex: Optional[str] = None
         self._relay_url: Optional[str] = None
         self._human_wallet: Optional[str] = None
+        self._mode: str = "encrypted"
 
     @property
     def paired(self) -> bool:
@@ -109,19 +111,22 @@ class ClankerWallet:
         self._human_pubkey_hex = pubkey
         self._relay_url = relay
         self._human_wallet = raw.get("wallet") or None
+        self._mode = raw.get("mode") or "encrypted"
 
         return PairingData(
             version=version,
             pubkey=pubkey,
             relay=relay,
             wallet=raw.get("wallet", ""),
+            mode=raw.get("mode"),
         )
 
     async def request_tx(self, options: RequestTxOptions) -> str:
         """Send a tx request to the paired human and wait for approval.
 
         Returns the tx hash on approval.
-        Raises TxRejectedError, TxTimeoutError, TxError, or RelayError.
+        Raises InvalidTxError (before anything is sent), TxRejectedError,
+        TxTimeoutError, TxError, or RelayError.
         """
         if (
             self._human_pubkey is None
@@ -130,6 +135,9 @@ class ClankerWallet:
         ):
             raise NotPairedError()
 
+        # reject malformed requests before anything reaches the relay
+        chain_id, transaction = validate_tx(options.chain_id, options.transaction)
+
         timeout_ms = options.timeout_ms or _DEFAULT_TIMEOUT_MS
         request_id = f"req_{int(time.time() * 1000)}_{_random_suffix()}"
 
@@ -137,8 +145,8 @@ class ClankerWallet:
             request_id=request_id,
             agent_id=self.agent_id,
             timestamp=_iso_now(),
-            chain_id=options.chain_id,
-            transaction=options.transaction,
+            chain_id=chain_id,
+            transaction=transaction,
             signature="",  # filled after signing
             context=options.context,
         )
@@ -153,6 +161,17 @@ class ClankerWallet:
         agent_pubkey_hex = to_hex(self.public_key)
         signing_pubkey_hex = to_hex(self.signing_public_key)
 
+        # managed mode: relay gets plaintext tx params so it can simulate (same object as src/client.ts)
+        simulate: Optional[Dict[str, Any]] = None
+        if self._mode == "managed":
+            simulate = {
+                "from": self._human_wallet or "",
+                "to": transaction.to,
+                "value": transaction.value,
+                "data": transaction.data,
+                "chainId": chain_id,
+            }
+
         timeout_s = timeout_ms / 1000.0
 
         try:
@@ -165,6 +184,7 @@ class ClankerWallet:
                     signing_pubkey_hex=signing_pubkey_hex,
                     tx_request=tx_request,
                     request_id=request_id,
+                    simulate=simulate,
                 ),
                 timeout=timeout_s,
             )
@@ -185,6 +205,7 @@ class ClankerWallet:
         signing_pubkey_hex: str,
         tx_request: TxRequest,
         request_id: str,
+        simulate: Optional[Dict[str, Any]],
     ) -> str:
         """Open WS, join room, send encrypted request, wait for response."""
         async with websockets.asyncio.client.connect(relay_url) as ws:
@@ -207,21 +228,20 @@ class ClankerWallet:
                         ciphertext=ciphertext,
                         signing_pubkey=signing_pubkey_hex,
                     )
-                    await ws.send(
-                        json.dumps(
+                    ws_msg: Dict[str, Any] = {
+                        "type": "message",
+                        "room": room,
+                        "payload": json.dumps(
                             {
-                                "type": "message",
-                                "room": room,
-                                "payload": json.dumps(
-                                    {
-                                        "sender_pubkey": envelope.sender_pubkey,
-                                        "ciphertext": envelope.ciphertext,
-                                        "signing_pubkey": envelope.signing_pubkey,
-                                    }
-                                ),
+                                "sender_pubkey": envelope.sender_pubkey,
+                                "ciphertext": envelope.ciphertext,
+                                "signing_pubkey": envelope.signing_pubkey,
                             }
-                        )
-                    )
+                        ),
+                    }
+                    if simulate is not None:
+                        ws_msg["simulate"] = simulate
+                    await ws.send(json.dumps(ws_msg))
                     continue
 
                 if msg.get("type") == "message":

@@ -5,6 +5,13 @@ export interface Transaction {
   data: string
 }
 
+/** transaction as passed to requestTx: value in wei, data defaults to "0x" */
+export interface TxInput {
+  to: string
+  value: string | bigint
+  data?: string
+}
+
 /** optional context about the transaction */
 export interface TxContext {
   reason?: string
@@ -52,7 +59,8 @@ export interface PairingData {
 /** options for requestTx */
 export interface RequestTxOptions {
   chain_id: number
-  transaction: Transaction
+  /** checked before sending; an invalid field throws InvalidTxError */
+  transaction: TxInput
   context?: TxContext
   /** timeout in ms (default: 3_600_000 = 1hr) */
   timeout_ms?: number

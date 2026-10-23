@@ -1,6 +1,7 @@
 import { decryptMessage, encryptMessage, fromHex, generateKeypair, keypairFromSecret, signMessage, signingKeypairFromSeed, toHex } from './crypto.js'
 import { TypedEmitter } from './events.js'
 import type { AgentEnvelope, PairingData, RequestTxOptions, TxRequest, TxResponse } from './types.js'
+import { validateTx } from './validate.js'
 
 const DEFAULT_TIMEOUT_MS = 3_600_000 // 1 hour
 
@@ -88,6 +89,9 @@ export class ClankerWallet extends TypedEmitter {
       throw new Error('not paired — call pair() first')
     }
 
+    // reject malformed requests before anything reaches the relay
+    const { chain_id, transaction } = validateTx(options.chain_id, options.transaction)
+
     const { humanPubkey, humanPubkeyHex, relayUrl, humanWallet, mode } = this.pairing
     const timeoutMs = options.timeout_ms ?? DEFAULT_TIMEOUT_MS
     const requestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
@@ -96,8 +100,8 @@ export class ClankerWallet extends TypedEmitter {
       request_id: requestId,
       agent_id: this.agentId,
       timestamp: new Date().toISOString(),
-      chain_id: options.chain_id,
-      transaction: options.transaction,
+      chain_id,
+      transaction,
       context: options.context,
       signature: '', // set below after signing
     }
@@ -182,10 +186,10 @@ export class ClankerWallet extends TypedEmitter {
           if (mode === 'managed') {
             wsMsg.simulate = {
               from: humanWallet || '',
-              to: options.transaction.to,
-              value: options.transaction.value,
-              data: options.transaction.data,
-              chainId: options.chain_id,
+              to: transaction.to,
+              value: transaction.value,
+              data: transaction.data,
+              chainId: chain_id,
             }
           }
           ws.send(JSON.stringify(wsMsg))
