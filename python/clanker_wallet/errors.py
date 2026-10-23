@@ -47,9 +47,10 @@ class RelayError(ClankerError):
 
 
 class InvalidTxError(ClankerError, ValueError):
-    """Raised by request_tx before anything is sent when a tx field is malformed.
+    """Raised by request_tx / request_transfer before anything is sent when a field is malformed.
 
-    ``field`` is one of "chain_id", "to", "value", "data".
+    ``field`` is one of "chain_id", "to", "value", "data" (request_tx) or
+    "chain_family", "chain_network", "asset", "to", "amount", "fee" (request_transfer).
     """
 
     def __init__(self, field: str, reason: str) -> None:

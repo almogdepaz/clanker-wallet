@@ -35,9 +35,13 @@ from clanker_wallet.errors import (
     TxRejectedError,
     TxTimeoutError,
 )
+from clanker_wallet import client as client_module
+from clanker_wallet.crypto import keypair_from_secret, verify_signature
 from clanker_wallet.types import (
+    RequestTransferOptions,
     RequestTxOptions,
     Transaction,
+    Transfer,
     TxContext,
 )
 
@@ -685,3 +689,168 @@ class TestRequestTxValidation:
         finally:
             listener_task.cancel()
             await ws.close()
+
+
+# ---------------------------------------------------------------------------
+# Wire format: evm requests pinned byte for byte; bitcoin / chia transfers (mirrors src/wire.test.ts)
+# ---------------------------------------------------------------------------
+
+AGENT_SECRET = bytes([7]) * 32
+FROZEN_REQUEST_ID = "req_1767323045678_4fzzzx"
+FROZEN_NOW = "2026-01-02T03:04:05.678Z"
+TXCH = "txch1qqqsyqcyq5rqwzqfpg9scrgwpugpzysnzs23v9ccrydpk8qarc0sw0amhg"
+BTC_TEST = "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx"
+
+# what 0.4.2 sends for this request (python keeps context after signature); must not change
+EVM_PLAINTEXT = (
+    '{"request_id":"req_1767323045678_4fzzzx","agent_id":"agent_13be4feaeaf2","timestamp":"2026-01-02T03:04:05.678Z",'
+    '"chain_id":84532,"transaction":{"to":"0x2222222222222222222222222222222222222222","value":"5","data":"0xabcd"},'
+    '"signature":"6kVLWE36IfpETdlbeRk0Rg9sDYrwrkSw2BlCp8L1b9Ptq2ib1GOlxqNsLbcHAwsz4+tCEybXuNE1CXbrofKmAw==",'
+    '"context":{"reason":"pay","urgency":"low","expected_outcome":"paid"}}'
+)
+
+
+@pytest.fixture
+def frozen(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fix the request id and timestamp so the signed request is deterministic."""
+    monkeypatch.setattr(client_module, "time", type("FrozenTime", (), {"time": staticmethod(lambda: 1767323045.678)}))
+    monkeypatch.setattr(client_module, "_random_suffix", lambda: "4fzzzx")
+    monkeypatch.setattr(client_module, "_iso_now", lambda: FROZEN_NOW)
+
+
+async def _capture(
+    logging_relay: Tuple[str, List[Dict[str, Any]]],
+    pairing: Dict[str, Any],
+    send: Callable[[ClankerWallet], Any],
+) -> Tuple[str, Dict[str, Any]]:
+    """Pair a fixed agent, run `send`, approve it as the human; return the plaintext and the agent's relay frame."""
+    relay_url, log = logging_relay
+    human_kp = generate_keypair()
+    human_pubkey_hex = to_hex(human_kp.public_key)
+
+    def respond(req: Dict[str, Any], _agent_pub: str) -> Dict[str, Any]:
+        return {"request_id": req["request_id"], "status": "approved", "tx_hash": "0xabc"}
+
+    ws, _received, listener_task = await simulate_human(human_kp, relay_url, respond)
+    try:
+        agent = ClankerWallet(secret_key=AGENT_SECRET)
+        agent.pair(json.dumps({"version": 1, "pubkey": human_pubkey_hex, "relay": relay_url, **pairing}))
+        assert await send(agent) == "0xabc"
+        frame = next(
+            m for m in log if m.get("type") == "message" and json.loads(m["payload"])["sender_pubkey"] != human_pubkey_hex
+        )
+        envelope = json.loads(frame["payload"])
+        plaintext = decrypt_message(envelope["ciphertext"], from_hex(envelope["sender_pubkey"]), human_kp.secret_key)
+        assert plaintext is not None
+        return plaintext, frame
+    finally:
+        listener_task.cancel()
+        await ws.close()
+
+
+def _signature_verifies(plaintext: str) -> bool:
+    """The web app's check: the signature covers the request as received, with signature set to ""."""
+    req = json.loads(plaintext)
+    payload = json.dumps({**req, "signature": ""}, separators=(",", ":"))
+    signing_pub = ClankerWallet(secret_key=AGENT_SECRET).signing_public_key
+    return verify_signature(payload, req["signature"], signing_pub)
+
+
+def _evm_request(agent: ClankerWallet) -> Any:
+    return agent.request_tx(
+        RequestTxOptions(
+            chain_id=84532,
+            transaction=Transaction(to=TO, value=5, data="0xabcd"),
+            context=TxContext(reason="pay", urgency="low", expected_outcome="paid"),
+            timeout_ms=10000,
+        )
+    )
+
+
+class TestWire:
+    async def test_evm_request_is_unchanged(self, frozen: None, logging_relay: Tuple[str, List[Dict[str, Any]]]) -> None:
+        assert keypair_from_secret(AGENT_SECRET).public_key.hex().startswith("13be4feaeaf2")
+        plaintext, frame = await _capture(logging_relay, {"wallet": RECIPIENT, "mode": "managed"}, _evm_request)
+        assert plaintext == EVM_PLAINTEXT
+        assert frame["simulate"] == {"from": RECIPIENT, "to": TO, "value": "5", "data": "0xabcd", "chainId": 84532}
+
+    async def test_chia_transfer(self, frozen: None, logging_relay: Tuple[str, List[Dict[str, Any]]]) -> None:
+        plaintext, frame = await _capture(
+            logging_relay,
+            {"wallet": "xch1me", "mode": "managed", "chain_family": "chia"},
+            lambda agent: agent.request_transfer(
+                RequestTransferOptions(
+                    chain_network="testnet11",
+                    transfer=Transfer(asset="xch", to=TXCH, amount=5),
+                    context=TxContext(reason="pay"),
+                    timeout_ms=10000,
+                )
+            ),
+        )
+        req = json.loads(plaintext)
+        assert list(req) == [
+            "request_id", "agent_id", "timestamp", "chain_family", "chain_network", "transfer", "signature", "context",
+        ]
+        assert req["request_id"] == FROZEN_REQUEST_ID
+        assert req["chain_family"] == "chia"
+        assert req["chain_network"] == "testnet11"
+        assert req["transfer"] == {"asset": "xch", "to": TXCH, "amount": "5", "fee": "0"}
+        assert req["context"] == {"reason": "pay"}
+        assert _signature_verifies(plaintext)
+        # the relay simulator is evm-only
+        assert "simulate" not in frame
+
+    async def test_bitcoin_transfer_has_no_fee(self, logging_relay: Tuple[str, List[Dict[str, Any]]]) -> None:
+        plaintext, _frame = await _capture(
+            logging_relay,
+            {"wallet": "tb1me", "chain_family": "bitcoin", "chain_network": "testnet"},
+            lambda agent: agent.request_transfer(
+                RequestTransferOptions(
+                    chain_network="testnet", transfer=Transfer(asset="btc", to=BTC_TEST, amount="1000"), timeout_ms=10000
+                )
+            ),
+        )
+        req = json.loads(plaintext)
+        assert req["transfer"] == {"asset": "btc", "to": BTC_TEST, "amount": "1000"}
+        assert "context" not in req
+        assert "chain_id" not in req and "transaction" not in req
+        assert _signature_verifies(plaintext)
+
+    @pytest.mark.parametrize(
+        "pairing,network,transfer,field",
+        [
+            ({}, "testnet11", Transfer(asset="xch", to=TXCH, amount=1), "chain_family"),
+            ({"chain_family": "chia", "chain_network": "mainnet"}, "testnet11", Transfer(asset="xch", to=TXCH, amount=1), "chain_network"),
+            ({"chain_family": "bitcoin"}, "mainnet", Transfer(asset="btc", to=BTC_TEST, amount=1), "to"),
+        ],
+    )
+    async def test_transfer_rejected_before_connecting(
+        self,
+        logging_relay: Tuple[str, List[Dict[str, Any]]],
+        pairing: Dict[str, Any],
+        network: str,
+        transfer: Transfer,
+        field: str,
+    ) -> None:
+        relay_url, log = logging_relay
+        agent = ClankerWallet()
+        agent.pair(json.dumps({"version": 1, "pubkey": to_hex(generate_keypair().public_key), "relay": relay_url, **pairing}))
+        with pytest.raises(InvalidTxError) as exc:
+            await agent.request_transfer(RequestTransferOptions(chain_network=network, transfer=transfer, timeout_ms=2000))
+        assert exc.value.field == field
+        assert log == []
+
+    async def test_transfer_needs_pairing(self) -> None:
+        with pytest.raises(NotPairedError):
+            await ClankerWallet().request_transfer(
+                RequestTransferOptions(chain_network="testnet11", transfer=Transfer(asset="xch", to=TXCH, amount=1))
+            )
+
+    def test_pair_keeps_chain_family_and_network(self) -> None:
+        data = ClankerWallet().pair(
+            json.dumps({"version": 1, "pubkey": "aa", "relay": "ws://x", "chain_family": "chia", "chain_network": "testnet11"})
+        )
+        assert data.chain_family == "chia"
+        assert data.chain_network == "testnet11"
+        evm = ClankerWallet().pair(json.dumps({"version": 1, "pubkey": "aa", "relay": "ws://x"}))
+        assert evm.chain_family is None and evm.chain_network is None

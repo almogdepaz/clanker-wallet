@@ -1,7 +1,7 @@
 """Wire protocol types for Clanker Wallet SDK.
 
-Mirrors sdk/src/types.ts — Transaction, TxRequest, TxResponse,
-AgentEnvelope, PairingData.
+Mirrors sdk/src/types.ts — Transaction, TxRequest, Transfer, TransferRequest,
+TxResponse, AgentEnvelope, PairingData.
 """
 
 from __future__ import annotations
@@ -42,6 +42,31 @@ class TxRequest:
 
 
 @dataclass(slots=True)
+class Transfer:
+    """A bitcoin / chia transfer to one recipient. The human's wallet builds, signs and broadcasts it."""
+
+    asset: str  # "btc" | "xch"
+    to: str  # recipient on the pairing's network (bc1/tb1 segwit, xch1/txch1)
+    amount: Union[str, int]  # sats or mojos, as a decimal string or int; sent as a decimal string
+    # chia only, in mojos (default "0"); bitcoin fees are set by the wallet
+    fee: Optional[Union[str, int]] = None
+
+
+@dataclass(slots=True)
+class TransferRequest:
+    """Bitcoin / chia transfer request sent to the human (matches web app NonEvmTxRequest)."""
+
+    request_id: str
+    agent_id: str
+    timestamp: str  # ISO 8601
+    chain_family: str  # "bitcoin" | "chia"
+    chain_network: str  # bitcoin: mainnet | testnet | signet; chia: mainnet | testnet11
+    transfer: Transfer
+    signature: str
+    context: Optional[TxContext] = None
+
+
+@dataclass(slots=True)
 class TxResponse:
     """Response from the human (decrypted)."""
 
@@ -67,9 +92,11 @@ class PairingData:
     version: int
     pubkey: str  # human's x25519 pubkey (hex)
     relay: str  # ws:// relay URL
-    wallet: str  # 0x... address
+    wallet: str  # the human's address on the pairing's chain
     # "encrypted" (default): relay sees only ciphertext. "managed": relay also receives tx params for simulation.
     mode: Optional[str] = None
+    chain_family: Optional[str] = None  # "bitcoin" | "chia"; absent for evm
+    chain_network: Optional[str] = None  # the network the human's wallet is on, when the pairing names one
 
 
 @dataclass(slots=True)
@@ -80,6 +107,23 @@ class RequestTxOptions:
     transaction: Transaction
     context: Optional[TxContext] = None
     timeout_ms: Optional[int] = None  # default: 1 hour
+
+
+@dataclass(slots=True)
+class RequestTransferOptions:
+    """Options for ClankerWallet.request_transfer()."""
+
+    chain_network: str
+    transfer: Transfer
+    context: Optional[TxContext] = None
+    timeout_ms: Optional[int] = None  # default: 1 hour
+
+
+def _context_to_dict(context: Optional[TxContext]) -> Dict[str, Any]:
+    """The context fields that are set; empty when there are none."""
+    if context is None:
+        return {}
+    return {k: v for k, v in asdict(context).items() if v is not None}
 
 
 def _tx_request_to_dict(req: TxRequest) -> Dict[str, Any]:
@@ -96,8 +140,24 @@ def _tx_request_to_dict(req: TxRequest) -> Dict[str, Any]:
         "transaction": asdict(req.transaction),
         "signature": req.signature,
     }
-    if req.context is not None:
-        ctx = {k: v for k, v in asdict(req.context).items() if v is not None}
-        if ctx:
-            d["context"] = ctx
+    ctx = _context_to_dict(req.context)
+    if ctx:
+        d["context"] = ctx
+    return d
+
+
+def _transfer_request_to_dict(req: TransferRequest) -> Dict[str, Any]:
+    """Serialize TransferRequest like _tx_request_to_dict: no fee key when unset, no empty context."""
+    d: Dict[str, Any] = {
+        "request_id": req.request_id,
+        "agent_id": req.agent_id,
+        "timestamp": req.timestamp,
+        "chain_family": req.chain_family,
+        "chain_network": req.chain_network,
+        "transfer": {k: v for k, v in asdict(req.transfer).items() if v is not None},
+        "signature": req.signature,
+    }
+    ctx = _context_to_dict(req.context)
+    if ctx:
+        d["context"] = ctx
     return d

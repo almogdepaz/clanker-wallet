@@ -2,7 +2,7 @@
 
 Python SDK for [Clanker Wallet](https://github.com/almogdepaz/clanker-wallet) — E2E encrypted transaction approval for AI agents.
 
-An AI agent proposes transactions, a human reviews and signs them via the web app. All communication is end-to-end encrypted using x25519 + nacl.box.
+An AI agent proposes transactions, a human reviews and signs them via the web app. All communication is end-to-end encrypted using x25519 + nacl.box. EVM chains take raw transactions (`request_tx`); bitcoin and chia take transfers (`request_transfer`) that the human's wallet builds.
 
 ## Install
 
@@ -12,7 +12,7 @@ pip install clanker-wallet
 
 Requires Python 3.10+.
 
-`request_tx()` opens a WebSocket to the relay in the pairing JSON (`wss://relay.clanker-wallet.xyz/ws`). In a sandbox or behind a firewall, allow that host, or it raises `RelayError`. `HTTPS_PROXY` is honored with websockets 15 or newer.
+`request_tx()` and `request_transfer()` open a WebSocket to the relay in the pairing JSON (`wss://relay.clanker-wallet.xyz/ws`). In a sandbox or behind a firewall, allow that host, or it raises `RelayError`. `HTTPS_PROXY` is honored with websockets 15 or newer.
 
 ## Quick Start
 
@@ -92,7 +92,7 @@ print(pairing.relay)   # wss://relay.example/ws
 print(pairing.wallet)  # 0x...
 ```
 
-Raises `PairingError` if JSON is invalid or version != 1.
+Raises `PairingError` if JSON is invalid or version != 1. The web app's bitcoin and chia tabs give pairing JSON with `"chain_family":"bitcoin"` / `"chain_family":"chia"`; it is kept in `PairingData.chain_family` and decides what `request_transfer()` sends.
 
 #### `async request_tx(options: RequestTxOptions) -> str`
 
@@ -106,6 +106,23 @@ tx_hash = await agent.request_tx(RequestTxOptions(
     transaction=Transaction(to="0x000000000000000000000000000000000000dEaD", value="0", data="0x"),
     context=TxContext(reason="swap tokens"),
     timeout_ms=60_000,  # 1 minute (default: 1 hour)
+))
+```
+
+#### `async request_transfer(options: RequestTransferOptions) -> str`
+
+Send bitcoin or chia through a bitcoin or chia pairing: the human's wallet builds, signs and broadcasts the transaction. Returns the bitcoin txid or chia transaction id on approval; rejection, timeout and relay errors raise as for `request_tx()`.
+
+Raises `InvalidTxError` before anything is sent for an evm pairing, an unknown `chain_network`, a recipient from another network (bitcoin: segwit `bc1...`/`tb1...` only), a non-integer amount, or a bitcoin `fee` (bitcoin wallets set their own).
+
+```python
+from clanker_wallet import RequestTransferOptions, Transfer
+
+# with a chia pairing: 1000 mojos on testnet11
+tx_id = await agent.request_transfer(RequestTransferOptions(
+    chain_network="testnet11",
+    transfer=Transfer(asset="xch", to="txch1qqqsyqcyq5rqwzqfpg9scrgwpugpzysnzs23v9ccrydpk8qarc0sw0amhg", amount=1000, fee=0),
+    context=TxContext(reason="pay for the api call"),
 ))
 ```
 
@@ -140,15 +157,36 @@ RequestTxOptions(chain_id: int, transaction: Transaction, context=None, timeout_
 
 - `timeout_ms` — defaults to 3,600,000 (1 hour)
 
+#### `Transfer`
+
+```python
+Transfer(asset: str, to: str, amount: str | int, fee: str | int | None = None)
+```
+
+- `asset` — `"btc"` or `"xch"`, matching the pairing's family
+- `to` — bech32/bech32m address on `chain_network`: `bc1...` (bitcoin mainnet), `tb1...` (testnet, signet), `xch1...`, `txch1...`
+- `amount` — whole sats or mojos, as a decimal string or int (1 BTC = 100,000,000 sats; 1 XCH = 1,000,000,000,000 mojos)
+- `fee` — chia only, in mojos; defaults to `0` and is shown to the human
+
+#### `RequestTransferOptions`
+
+```python
+RequestTransferOptions(chain_network: str, transfer: Transfer, context=None, timeout_ms=None)
+```
+
+- `chain_network` — bitcoin: `"mainnet"`, `"testnet"`, `"signet"`; chia: `"mainnet"`, `"testnet11"`. There is no default network.
+
 #### `PairingData`
 
 Returned by `pair()`.
 
 ```python
-PairingData(version: int, pubkey: str, relay: str, wallet: str, mode: str | None = None)
+PairingData(version: int, pubkey: str, relay: str, wallet: str, mode: str | None = None, chain_family: str | None = None, chain_network: str | None = None)
 ```
 
 - `mode` — `"managed"` (the relay also gets the tx fields to simulate) or `"encrypted"` / `None` (ciphertext only)
+- `chain_family` — `"bitcoin"` or `"chia"`; `None` for an evm pairing
+- `chain_network` — set when the pairing names one; `request_transfer()` then refuses other networks
 
 ### Errors
 
@@ -157,12 +195,12 @@ All errors inherit from `ClankerError`.
 | Error | When | Attributes |
 |-------|------|------------|
 | `ClankerError` | Base class | — |
-| `NotPairedError` | `request_tx()` called before `pair()` | — |
+| `NotPairedError` | `request_tx()` / `request_transfer()` called before `pair()` | — |
 | `TxRejectedError` | Human rejected the transaction | `request_id` |
 | `TxTimeoutError` | No response within timeout | `request_id`, `timeout_ms` |
 | `TxError` | Transaction failed on-chain | `request_id`, `error` |
 | `PairingError` | Invalid pairing data | — |
-| `InvalidTxError` | Malformed tx request (also a `ValueError`); nothing was sent | `field`, `reason` |
+| `InvalidTxError` | Malformed tx or transfer request (also a `ValueError`); nothing was sent | `field`, `reason` |
 | `RelayError` | WebSocket connection issues | — |
 
 ```python

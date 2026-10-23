@@ -1,4 +1,4 @@
-"""ClankerWallet client — pair with a human, request tx approvals.
+"""ClankerWallet client — pair with a human, request tx and transfer approvals.
 
 Mirrors sdk/src/client.ts.
 """
@@ -25,6 +25,7 @@ from .crypto import (
     to_hex,
 )
 from .errors import (
+    InvalidTxError,
     NotPairedError,
     PairingError,
     RelayError,
@@ -35,12 +36,15 @@ from .errors import (
 from .types import (
     AgentEnvelope,
     PairingData,
+    RequestTransferOptions,
     RequestTxOptions,
+    TransferRequest,
     TxRequest,
     TxResponse,
+    _transfer_request_to_dict,
     _tx_request_to_dict,
 )
-from .validate import validate_tx
+from .validate import validate_transfer, validate_tx
 
 _DEFAULT_TIMEOUT_MS = 3_600_000  # 1 hour
 
@@ -90,6 +94,8 @@ class ClankerWallet:
         self._relay_url: Optional[str] = None
         self._human_wallet: Optional[str] = None
         self._mode: str = "encrypted"
+        self._chain_family: Optional[str] = None
+        self._chain_network: Optional[str] = None
 
     @property
     def paired(self) -> bool:
@@ -117,6 +123,8 @@ class ClankerWallet:
         self._relay_url = relay
         self._human_wallet = raw.get("wallet") or None
         self._mode = raw.get("mode") or "encrypted"
+        self._chain_family = raw.get("chain_family") or None
+        self._chain_network = raw.get("chain_network") or None
 
         return PairingData(
             version=version,
@@ -124,6 +132,8 @@ class ClankerWallet:
             relay=relay,
             wallet=raw.get("wallet", ""),
             mode=raw.get("mode"),
+            chain_family=raw.get("chain_family"),
+            chain_network=raw.get("chain_network"),
         )
 
     async def request_tx(self, options: RequestTxOptions) -> str:
@@ -133,18 +143,13 @@ class ClankerWallet:
         Raises InvalidTxError (before anything is sent), TxRejectedError,
         TxTimeoutError, TxError, or RelayError.
         """
-        if (
-            self._human_pubkey is None
-            or self._human_pubkey_hex is None
-            or self._relay_url is None
-        ):
+        if not self.paired:
             raise NotPairedError()
 
         # reject malformed requests before anything reaches the relay
         chain_id, transaction = validate_tx(options.chain_id, options.transaction)
 
-        timeout_ms = options.timeout_ms or _DEFAULT_TIMEOUT_MS
-        request_id = f"req_{int(time.time() * 1000)}_{_random_suffix()}"
+        request_id = _new_request_id()
 
         tx_request = TxRequest(
             request_id=request_id,
@@ -159,12 +164,7 @@ class ClankerWallet:
         # sign the request (signature field empty during signing, then filled)
         sig_payload = json.dumps(_tx_request_to_dict(tx_request), separators=(",", ":"))
         tx_request.signature = sign_message(sig_payload, self._signing_secret_key)
-
-        human_pubkey = self._human_pubkey
-        human_pubkey_hex = self._human_pubkey_hex
-        relay_url = self._relay_url
-        agent_pubkey_hex = to_hex(self.public_key)
-        signing_pubkey_hex = to_hex(self.signing_public_key)
+        plaintext = json.dumps(_tx_request_to_dict(tx_request), separators=(",", ":"))
 
         # managed mode: relay gets plaintext tx params so it can simulate (same object as src/client.ts)
         simulate: Optional[Dict[str, Any]] = None
@@ -177,21 +177,72 @@ class ClankerWallet:
                 "chainId": chain_id,
             }
 
-        timeout_s = timeout_ms / 1000.0
+        return await self._send(request_id, plaintext, options.timeout_ms, simulate)
+
+    async def request_transfer(self, options: RequestTransferOptions) -> str:
+        """Send a bitcoin / chia transfer request to the paired human and wait for approval.
+
+        The human's wallet builds, signs and broadcasts the transfer. Needs a bitcoin or
+        chia pairing. Returns the transaction id on approval.
+        Raises InvalidTxError (before anything is sent), TxRejectedError,
+        TxTimeoutError, TxError, or RelayError.
+        """
+        if not self.paired:
+            raise NotPairedError()
+
+        # reject malformed requests before anything reaches the relay
+        chain_family, chain_network, transfer = validate_transfer(
+            self._chain_family, options.chain_network, options.transfer
+        )
+        if self._chain_network and self._chain_network != chain_network:
+            raise InvalidTxError(
+                "chain_network", f'this pairing is for {chain_family} {self._chain_network}, got "{chain_network}"'
+            )
+
+        request_id = _new_request_id()
+        request = TransferRequest(
+            request_id=request_id,
+            agent_id=self.agent_id,
+            timestamp=_iso_now(),
+            chain_family=chain_family,
+            chain_network=chain_network,
+            transfer=transfer,
+            signature="",  # filled after signing
+            context=options.context,
+        )
+        sig_payload = json.dumps(_transfer_request_to_dict(request), separators=(",", ":"))
+        request.signature = sign_message(sig_payload, self._signing_secret_key)
+        plaintext = json.dumps(_transfer_request_to_dict(request), separators=(",", ":"))
+
+        # the relay simulator is evm-only: no simulate object for transfers, even on a managed pairing
+        return await self._send(request_id, plaintext, options.timeout_ms, None)
+
+    async def _send(
+        self,
+        request_id: str,
+        plaintext: str,
+        timeout_ms: Optional[int],
+        simulate: Optional[Dict[str, Any]],
+    ) -> str:
+        """Deliver a signed request to the paired human and wait for the answer, mapping failures to SDK errors."""
+        human_pubkey, room, relay_url = self._human_pubkey, self._human_pubkey_hex, self._relay_url
+        if human_pubkey is None or room is None or relay_url is None:
+            raise NotPairedError()
+        timeout_ms = timeout_ms or _DEFAULT_TIMEOUT_MS
 
         try:
             return await asyncio.wait_for(
                 self._ws_request(
                     relay_url=relay_url,
-                    room=human_pubkey_hex,
+                    room=room,
                     human_pubkey=human_pubkey,
-                    agent_pubkey_hex=agent_pubkey_hex,
-                    signing_pubkey_hex=signing_pubkey_hex,
-                    tx_request=tx_request,
+                    agent_pubkey_hex=to_hex(self.public_key),
+                    signing_pubkey_hex=to_hex(self.signing_public_key),
+                    plaintext=plaintext,
                     request_id=request_id,
                     simulate=simulate,
                 ),
-                timeout=timeout_s,
+                timeout=timeout_ms / 1000.0,
             )
         except asyncio.TimeoutError:
             raise TxTimeoutError(request_id, timeout_ms)
@@ -211,7 +262,7 @@ class ClankerWallet:
         human_pubkey: bytes,
         agent_pubkey_hex: str,
         signing_pubkey_hex: str,
-        tx_request: TxRequest,
+        plaintext: str,
         request_id: str,
         simulate: Optional[Dict[str, Any]],
     ) -> str:
@@ -224,10 +275,7 @@ class ClankerWallet:
                 msg = json.loads(raw_msg)
 
                 if msg.get("type") == "joined":
-                    # room joined — send the encrypted tx request
-                    plaintext = json.dumps(
-                        _tx_request_to_dict(tx_request), separators=(",", ":")
-                    )
+                    # room joined — send the encrypted request
                     ciphertext = encrypt_message(
                         plaintext, human_pubkey, self.secret_key
                     )
@@ -296,6 +344,10 @@ class ClankerWallet:
 
             # ws closed without response
             raise RelayError("relay connection closed unexpectedly")
+
+
+def _new_request_id() -> str:
+    return f"req_{int(time.time() * 1000)}_{_random_suffix()}"
 
 
 def _random_suffix() -> str:

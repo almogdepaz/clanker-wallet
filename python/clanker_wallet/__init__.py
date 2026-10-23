@@ -34,8 +34,11 @@ from .types import (
     AgentEnvelope,
     PairingData,
     RequestTxOptions,
+    Transfer,
+    TransferRequest,
+    RequestTransferOptions,
 )
-from .validate import is_checksum_address, validate_tx
+from .validate import is_checksum_address, validate_transfer, validate_tx
 
 __all__ = [
     "__version__",
@@ -49,8 +52,12 @@ __all__ = [
     "AgentEnvelope",
     "PairingData",
     "RequestTxOptions",
+    "Transfer",
+    "TransferRequest",
+    "RequestTransferOptions",
     # validation
     "validate_tx",
+    "validate_transfer",
     "is_checksum_address",
     # crypto
     "generate_keypair",
