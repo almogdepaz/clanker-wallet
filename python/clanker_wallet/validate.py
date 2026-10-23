@@ -6,7 +6,7 @@ import re
 from typing import Any, Optional, Tuple
 
 from ._keccak import keccak256
-from .bech32 import decode_chia_address, decode_segwit_address
+from .bech32 import decode_chia_address, is_standard_segwit_address
 from .errors import InvalidTxError
 from .types import Transaction, Transfer
 
@@ -130,7 +130,7 @@ def validate_transfer(chain_family: Any, chain_network: Any, transfer: Transfer)
             raise InvalidTxError("fee", "bitcoin transfers take no fee; the wallet sets it")
         if int(amount) > _MAX_SAFE_INTEGER:
             raise InvalidTxError("amount", f"must be at most {_MAX_SAFE_INTEGER} sats, got {_shown(amount)}")
-        if not isinstance(to, str) or decode_segwit_address(hrp, to) is None:
+        if not isinstance(to, str) or not is_standard_segwit_address(hrp, to):
             raise InvalidTxError("to", f"not a bitcoin {network} address (segwit, {hrp}1...), got {_shown(to)}")
         return family, network, Transfer(asset=asset, to=to, amount=amount)
 

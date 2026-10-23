@@ -1,4 +1,4 @@
-import { decodeChiaAddress, decodeSegwitAddress } from './bech32.js'
+import { decodeChiaAddress, isStandardSegwitAddress } from './bech32.js'
 import { keccak256 } from './keccak.js'
 import type { Transaction, Transfer, TransferFamily, TransferInput, TxInput } from './types.js'
 
@@ -122,7 +122,7 @@ export function validateTransfer(
     if (BigInt(amount) > BigInt(Number.MAX_SAFE_INTEGER)) {
       throw new InvalidTxError('amount', `must be at most ${Number.MAX_SAFE_INTEGER} sats, got ${shown(amount)}`)
     }
-    if (typeof to !== 'string' || !decodeSegwitAddress(hrp, to)) {
+    if (typeof to !== 'string' || !isStandardSegwitAddress(hrp, to)) {
       throw new InvalidTxError('to', `not a bitcoin ${network} address (segwit, ${hrp}1...), got ${shown(to)}`)
     }
     return { chain_family: family, chain_network: network, transfer: { asset, to, amount } }

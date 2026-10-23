@@ -96,6 +96,16 @@ def decode_segwit_address(hrp: str, addr: str) -> Optional[Tuple[int, List[int]]
     return version, program
 
 
+
+def is_standard_segwit_address(hrp: str, addr: str) -> bool:
+    """A segwit address a wallet can pay today: v0 p2wpkh/p2wsh (20/32 bytes) or v1 p2tr (32 bytes).
+
+    Other versions and v1 lengths decode but are unspendable or anyone-can-spend, so transfers refuse them.
+    """
+    decoded = decode_segwit_address(hrp, addr)
+    return decoded is not None and (decoded[0] == 0 or (decoded[0] == 1 and len(decoded[1]) == 32))
+
+
 def decode_chia_address(hrp: str, addr: str) -> Optional[List[int]]:
     """Decode a chia address (bech32m of a 32-byte puzzle hash) for the given hrp ("xch" / "txch")."""
     decoded = bech32_decode(addr)

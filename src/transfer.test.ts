@@ -5,6 +5,15 @@ const BTC_MAIN = 'bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4'
 const BTC_TEST = 'tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx'
 const XCH = 'xch1qqqsyqcyq5rqwzqfpg9scrgwpugpzysnzs23v9ccrydpk8qarc0srg6dkm'
 const TXCH = 'txch1qqqsyqcyq5rqwzqfpg9scrgwpugpzysnzs23v9ccrydpk8qarc0sw0amhg'
+/** p2wsh (v0, 32 bytes) and p2tr (v1, 32 bytes) */
+const BTC_P2WSH = 'bc1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3qccfmv3'
+const BTC_P2TR = 'bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqzk5jj0'
+/** valid bech32m but not spendable today: v16 2-byte, v2 16-byte, v1 40-byte programs */
+const BTC_NONSTANDARD = [
+  'BC1SW50QGDZ25J',
+  'bc1zw508d6qejxtdg4y5r3zarvaryvaxxpcs',
+  'bc1pw508d6qejxtdg4y5r3zarvary0c5xw7kw508d6qejxtdg4y5r3zarvary0c5xw7kt5nd6y',
+]
 
 function fails(fn: () => unknown): InvalidTxError {
   try { fn() } catch (err) {
@@ -24,6 +33,18 @@ describe('validateTransfer: bitcoin', () => {
     expect(validateTransfer('bitcoin', 'testnet', { asset: 'btc', to: BTC_TEST, amount: '1' }).transfer.to).toBe(BTC_TEST)
     expect(validateTransfer('bitcoin', 'signet', { asset: 'btc', to: BTC_TEST.toUpperCase(), amount: '1' }).transfer.to)
       .toBe(BTC_TEST.toUpperCase())
+  })
+
+  it('accepts p2wpkh, p2wsh and p2tr recipients', () => {
+    for (const to of [BTC_MAIN, BTC_P2WSH, BTC_P2TR]) {
+      expect(validateTransfer('bitcoin', 'mainnet', { asset: 'btc', to, amount: '1' }).transfer.to).toBe(to)
+    }
+  })
+
+  it.each(BTC_NONSTANDARD)('rejects a future segwit version or program size: %s', (to) => {
+    const err = fails(() => validateTransfer('bitcoin', 'mainnet', { asset: 'btc', to, amount: '1' }))
+    expect(err.field).toBe('to')
+    expect(err.reason).toContain('not a bitcoin mainnet address')
   })
 
   it.each([

@@ -88,6 +88,15 @@ export function decodeSegwitAddress(hrp: string, addr: string): { version: numbe
   return { version, program }
 }
 
+/**
+ * a segwit address a wallet can pay today: v0 p2wpkh/p2wsh (20/32 bytes) or v1 p2tr (32 bytes).
+ * other versions and v1 lengths decode but are unspendable or anyone-can-spend, so transfers refuse them
+ */
+export function isStandardSegwitAddress(hrp: string, addr: string): boolean {
+  const decoded = decodeSegwitAddress(hrp, addr)
+  return !!decoded && (decoded.version === 0 || (decoded.version === 1 && decoded.program.length === 32))
+}
+
 /** decode a chia address (bech32m of a 32-byte puzzle hash) for the given hrp ('xch' / 'txch') */
 export function decodeChiaAddress(hrp: string, addr: string): number[] | null {
   const decoded = bech32Decode(addr)
