@@ -140,6 +140,8 @@ describe('cli --help', () => {
     // help goes to stderr; stdout stays for json results
     expect(res.stderr).toContain('docs: https://clanker-wallet.xyz/SKILL.md')
     expect(res.stderr).toMatch(/--timeout <ms>.*1 h/)
+    // same urgency names as the docs
+    expect(res.stderr).toContain('--urgency <low|medium|high>')
   })
 })
 

@@ -228,14 +228,14 @@ commands:
   whoami          show agent identity
 
 tx flags:
-  --chain <id>              chain ID (required) — 1, 8453, 84532 (base sepolia), etc.
-  --to <address>            recipient (required)
-  --value <wei>             value in wei, not ETH (default: 0; 1 ETH = 1000000000000000000)
-  --data <hex>              calldata (default: 0x)
-  --reason <text>           shown to human
-  --urgency <low|med|high>  priority hint
-  --expected-outcome <text> what will happen
-  --timeout <ms>            how long tx blocks waiting for the human (default: 3600000 = 1 h)
+  --chain <id>                 chain ID (required) — 1, 8453, 84532 (base sepolia), etc.
+  --to <address>               recipient (required)
+  --value <wei>                value in wei, not ETH (default: 0; 1 ETH = 1000000000000000000)
+  --data <hex>                 calldata (default: 0x)
+  --reason <text>              shown to human
+  --urgency <low|medium|high>  priority hint
+  --expected-outcome <text>    what will happen
+  --timeout <ms>               how long tx blocks waiting for the human (default: 3600000 = 1 h)
 
 exit codes:
   0  success

@@ -119,6 +119,7 @@ Transaction(to: str, value: str | int, data: str = "0x")
 
 - `to` — recipient address: `0x` + 40 hex characters; mixed case must pass the EIP-55 checksum
 - `value` — whole number of wei, as a decimal string or int (not ETH, no decimals)
+  (the js sdk takes a decimal string or `bigint` instead; a js `number` is rejected)
 - `data` — calldata, `0x` + even-length hex (defaults to `0x`)
 
 #### `TxContext`
@@ -142,8 +143,10 @@ RequestTxOptions(chain_id: int, transaction: Transaction, context=None, timeout_
 Returned by `pair()`.
 
 ```python
-PairingData(version: int, pubkey: str, relay: str, wallet: str)
+PairingData(version: int, pubkey: str, relay: str, wallet: str, mode: str | None = None)
 ```
+
+- `mode` — `"managed"` (the relay also gets the tx fields to simulate) or `"encrypted"` / `None` (ciphertext only)
 
 ### Errors
 

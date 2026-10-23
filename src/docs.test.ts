@@ -57,6 +57,12 @@ describe('documented contract', () => {
     expect(read(doc)).toMatch(/\|\s*5\s*\||exit code 5/)
   })
 
+  it('python/README.md documents the PairingData mode and the int vs bigint value difference', () => {
+    const text = read('python/README.md')
+    expect(text).toMatch(/PairingData\([^)]*mode: str \| None = None\)/)
+    expect(text).toMatch(/js sdk.*decimal string or `bigint`/i)
+  })
+
   it.each(['README.md', 'llms-full.txt', 'python/README.md'])('%s states the python version next to pip install', (doc) => {
     const text = read(doc)
     expect(text).toContain('pip install clanker-wallet')
