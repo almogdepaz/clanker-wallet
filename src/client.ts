@@ -12,7 +12,7 @@ function proxyHint(): string {
   const env = (globalThis as { process?: { env: Record<string, string | undefined> } }).process?.env
   if (!env || env.NODE_USE_ENV_PROXY) return ''
   return env.HTTPS_PROXY || env.https_proxy || env.HTTP_PROXY || env.http_proxy
-    ? '; HTTPS_PROXY is set but node ignores it, rerun with NODE_USE_ENV_PROXY=1'
+    ? '; HTTPS_PROXY is set but node ignores it, rerun with NODE_USE_ENV_PROXY=1 (node 24+)'
     : ''
 }
 

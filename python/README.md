@@ -12,7 +12,7 @@ pip install clanker-wallet
 
 Requires Python 3.10+.
 
-`request_tx()` opens a WebSocket to the relay in the pairing JSON (`wss://relay.clanker-wallet.xyz/ws`). In a sandbox or behind a firewall, allow that host, or it raises `RelayError`. `HTTPS_PROXY` is honored.
+`request_tx()` opens a WebSocket to the relay in the pairing JSON (`wss://relay.clanker-wallet.xyz/ws`). In a sandbox or behind a firewall, allow that host, or it raises `RelayError`. `HTTPS_PROXY` is honored with websockets 15 or newer.
 
 ## Quick Start
 
