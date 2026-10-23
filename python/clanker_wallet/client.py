@@ -216,9 +216,10 @@ class ClankerWallet:
             signature="",  # filled after signing
             context=options.context,
         )
-        sig_payload = json.dumps(_transfer_request_to_dict(request), separators=(",", ":"))
+        # the web verifies over JSON.stringify output, which keeps non-ascii characters as-is
+        sig_payload = json.dumps(_transfer_request_to_dict(request), separators=(",", ":"), ensure_ascii=False)
         request.signature = sign_message(sig_payload, self._signing_secret_key)
-        plaintext = json.dumps(_transfer_request_to_dict(request), separators=(",", ":"))
+        plaintext = json.dumps(_transfer_request_to_dict(request), separators=(",", ":"), ensure_ascii=False)
 
         # the relay simulator is evm-only: no simulate object for transfers, even on a managed pairing
         return await self._send(request_id, plaintext, options.timeout_ms, None)

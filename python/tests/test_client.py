@@ -749,9 +749,12 @@ async def _capture(
 
 
 def _signature_verifies(plaintext: str) -> bool:
-    """The web app's check: the signature covers the request as received, with signature set to ""."""
+    """The web app's check: the signature covers the request as received, with signature set to "".
+
+    The web re-serializes with JSON.stringify, which writes non-ascii characters as-is (ensure_ascii=False).
+    """
     req = json.loads(plaintext)
-    payload = json.dumps({**req, "signature": ""}, separators=(",", ":"))
+    payload = json.dumps({**req, "signature": ""}, separators=(",", ":"), ensure_ascii=False)
     signing_pub = ClankerWallet(secret_key=AGENT_SECRET).signing_public_key
     return verify_signature(payload, req["signature"], signing_pub)
 
@@ -821,6 +824,32 @@ class TestWire:
         assert _signature_verifies(plaintext)
         # the relay simulator is evm-only
         assert "simulate" not in frame
+
+    async def test_transfer_with_non_ascii_context_signs_what_the_web_verifies(
+        self, frozen: None, logging_relay: Tuple[str, List[Dict[str, Any]]]
+    ) -> None:
+        plaintext, _frame = await _capture(
+            logging_relay,
+            {"wallet": "xch1me", "chain_family": "chia"},
+            lambda agent: agent.request_transfer(
+                RequestTransferOptions(
+                    chain_network="testnet11",
+                    transfer=Transfer(asset="xch", to=TXCH, amount=5),
+                    context=TxContext(reason="café — 支払い"),
+                    timeout_ms=10000,
+                )
+            ),
+        )
+        # JSON.stringify({...req, signature: ''}) in the web app, for this request
+        js_signed = (
+            '{"request_id":"req_1767323045678_4fzzzx","agent_id":"agent_13be4feaeaf2","timestamp":"2026-01-02T03:04:05.678Z",'
+            f'"chain_family":"chia","chain_network":"testnet11","transfer":{{"asset":"xch","to":"{TXCH}","amount":"5","fee":"0"}},'
+            '"signature":"","context":{"reason":"café — 支払い"}}'
+        )
+        req = json.loads(plaintext)
+        signing_pub = ClankerWallet(secret_key=AGENT_SECRET).signing_public_key
+        assert verify_signature(js_signed, req["signature"], signing_pub)
+        assert '"reason":"café — 支払い"' in plaintext
 
     async def test_bitcoin_transfer_has_no_fee(self, logging_relay: Tuple[str, List[Dict[str, Any]]]) -> None:
         plaintext, _frame = await _capture(
