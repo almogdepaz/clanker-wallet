@@ -44,6 +44,11 @@ from .validate import validate_tx
 
 _DEFAULT_TIMEOUT_MS = 3_600_000  # 1 hour
 
+_UNREACHABLE_HINT = (
+    "if you run in a sandbox or behind a firewall, allow this host; "
+    "otherwise the relay may be down or rate limiting, retry in a few seconds"
+)
+
 
 class ClankerWallet:
     """E2E encrypted wallet client for AI agents.
@@ -190,12 +195,13 @@ class ClankerWallet:
             )
         except asyncio.TimeoutError:
             raise TxTimeoutError(request_id, timeout_ms)
-        except (TxRejectedError, TxError, TxTimeoutError, NotPairedError):
+        except (TxRejectedError, TxError, TxTimeoutError, NotPairedError, RelayError):
             raise
+        except websockets.exceptions.ConnectionClosed as exc:
+            # dropped after the handshake: the relay was reachable, so no sandbox hint (matches src/client.ts)
+            raise RelayError(f"relay connection error: {exc}") from exc
         except Exception as exc:
-            raise RelayError(
-                f"relay connection error: could not reach {relay_url} ({exc}; allow this host if you run in a sandbox or behind a firewall)"
-            ) from exc
+            raise RelayError(f"relay connection error: could not reach {relay_url} ({exc}; {_UNREACHABLE_HINT})") from exc
 
     async def _ws_request(
         self,

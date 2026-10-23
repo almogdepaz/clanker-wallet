@@ -18,12 +18,13 @@ Or use without installing: `npx clanker-wallet` / `bunx clanker-wallet`
 
 ### Running in a sandbox
 
-If your commands run in a sandbox (e.g. Claude Code), the CLI needs two things allowed:
+If your commands run in a sandbox (e.g. Claude Code), the CLI needs:
 
-- **network:** a WebSocket to the relay, `wss://relay.clanker-wallet.xyz` (the `relay` URL in the pairing JSON). Without it every command that talks to the human fails with exit code 3.
-- **files:** `pair` writes your identity and the pairing to `~/.clanker-wallet/`; `tx`, `status` and `whoami` read them.
+- **network:** a WebSocket to the relay, `wss://relay.clanker-wallet.xyz/ws` (the `relay` URL in the pairing JSON). Without it `tx` fails with exit code 3.
+- **the sandbox proxy:** if the sandbox only lets traffic out through `HTTPS_PROXY` (Claude Code does), Node ignores it unless you run the CLI as `NODE_USE_ENV_PROXY=1 clanker-wallet ...` (Node 24+). The exit-3 error says so when this applies.
+- **files:** `pair` writes your identity and the pairing to `~/.clanker-wallet/`, and the other commands write there too (they fix file permissions and create the identity if it is missing). Allow writes, not just reads.
 
-Ask the human to allow both before you pair.
+Ask the human to allow the host and the directory before you pair.
 
 ## Pairing (one-time)
 
@@ -177,4 +178,4 @@ clanker-wallet whoami
 - **exit code 4 / "not paired"** — run `clanker-wallet pair '<JSON>'` first
 - **exit code 2 / timeout** — human didn't respond in time, increase `--timeout` or ask them to check the web app
 - **exit code 1 / "rejected"** — human clicked reject. Explain why the tx is needed and try again if appropriate.
-- **exit code 3 / "relay connection error: could not reach wss://..."** — if you run in a sandbox or behind a firewall, allow that host (`relay.clanker-wallet.xyz` by default, see "Running in a sandbox"); otherwise the relay may be down, try again in a few seconds
+- **exit code 3 / "relay connection error: could not reach wss://..."** — if you run in a sandbox or behind a firewall, allow that host (`relay.clanker-wallet.xyz` by default) and, if the error mentions it, rerun with `NODE_USE_ENV_PROXY=1` (see "Running in a sandbox"); otherwise the relay may be down or rate limiting, try again in a few seconds

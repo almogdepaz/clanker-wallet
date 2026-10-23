@@ -146,6 +146,22 @@ describe('cli tx', () => {
     expect(status).toBe('error')
     expect(error).toContain(deadRelay)
   })
+
+  // claude code's sandbox only lets traffic out through HTTPS_PROXY, which node's WebSocket ignores without NODE_USE_ENV_PROXY
+  it.each([
+    ['proxy set, node not told to use it', { HTTPS_PROXY: 'http://127.0.0.1:1' }, true],
+    ['no proxy', {}, false],
+  ])('relay error names NODE_USE_ENV_PROXY only when it would help: %s', (_name, proxyEnv, hinted) => {
+    const home = mkdtempSync(join(tmpdir(), 'clanker-cli-'))
+    const deadRelay = 'ws://127.0.0.1:1'
+    runCli(home, 'pair', JSON.stringify({ version: 1, pubkey: randomBytes(32).toString('hex'), relay: deadRelay, wallet: WALLET }))
+    const env: Record<string, string | undefined> = { ...process.env, HOME: home, ...proxyEnv }
+    for (const key of ['NODE_USE_ENV_PROXY', 'HTTP_PROXY', 'http_proxy', 'https_proxy', ...(hinted ? [] : ['HTTPS_PROXY'])]) delete env[key]
+    const res = spawnSync(process.execPath, [CLI, 'tx', '--chain', '84532', '--to', TO, '--value', '1', '--timeout', '5000'], { env, encoding: 'utf8' })
+    expect(res.status).toBe(3)
+    const { error } = JSON.parse(res.stdout)
+    expect(error.includes('NODE_USE_ENV_PROXY=1')).toBe(hinted)
+  })
 })
 
 describe('cli --help', () => {

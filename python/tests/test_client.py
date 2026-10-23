@@ -616,6 +616,36 @@ class TestRequestTxValidation:
             )
         assert dead_relay in str(exc.value)
 
+    @pytest.mark.parametrize("after_join", ["error_frame", "clean_close", "drop"])
+    async def test_failure_after_connect_is_not_called_unreachable(self, after_join: str) -> None:
+        """the sandbox/firewall hint is for connect failures only; a relay that answered was reachable (matches src/client.ts)."""
+
+        async def handler(conn: Any) -> None:
+            await conn.recv()  # join
+            await conn.send(json.dumps({"type": "joined"}))
+            await conn.recv()  # the request
+            if after_join == "error_frame":
+                await conn.send(json.dumps({"type": "error", "message": "rate limited"}))
+                await conn.wait_closed()
+            elif after_join == "clean_close":
+                await conn.close()
+            else:
+                conn.transport.abort()
+
+        async with websockets.asyncio.server.serve(handler, "127.0.0.1", 0) as server:
+            port = server.sockets[0].getsockname()[1]
+            agent = ClankerWallet()
+            _pair(agent, f"ws://127.0.0.1:{port}", to_hex(generate_keypair().public_key), "encrypted")
+
+            with pytest.raises(RelayError) as exc:
+                await agent.request_tx(
+                    RequestTxOptions(chain_id=84532, transaction=Transaction(to=TO, value=1), timeout_ms=5000)
+                )
+        assert "could not reach" not in str(exc.value)
+        assert "sandbox" not in str(exc.value)
+        if after_join == "error_frame":
+            assert "rate limited" in str(exc.value)
+
     @pytest.mark.parametrize("mode", ["managed", "encrypted"])
     async def test_simulate_matches_js_sdk(
         self, logging_relay: Tuple[str, List[Dict[str, Any]]], mode: str

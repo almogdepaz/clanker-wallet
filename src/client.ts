@@ -5,6 +5,17 @@ import { validateTx } from './validate.js'
 
 const DEFAULT_TIMEOUT_MS = 3_600_000 // 1 hour
 
+const UNREACHABLE_HINT = 'if you run in a sandbox or behind a firewall, allow this host; otherwise the relay may be down or rate limiting, retry in a few seconds'
+
+/** node's WebSocket ignores HTTPS_PROXY unless NODE_USE_ENV_PROXY is set at startup, and sandboxes (claude code) only let traffic out through that proxy */
+function proxyHint(): string {
+  const env = (globalThis as { process?: { env: Record<string, string | undefined> } }).process?.env
+  if (!env || env.NODE_USE_ENV_PROXY) return ''
+  return env.HTTPS_PROXY || env.https_proxy || env.HTTP_PROXY || env.http_proxy
+    ? '; HTTPS_PROXY is set but node ignores it, rerun with NODE_USE_ENV_PROXY=1'
+    : ''
+}
+
 export interface ClankerWalletOptions {
   /** agent display name (informational) */
   agentName?: string
@@ -144,7 +155,7 @@ export class ClankerWallet extends TypedEmitter {
 
       ws.addEventListener('error', () => {
         // node's WebSocket error event carries no cause, so name the url: a sandbox or firewall blocking it looks the same as an outage
-        if (!settled) fail(`relay connection error: could not reach ${relayUrl} (allow this host if you run in a sandbox or behind a firewall)`)
+        if (!settled) fail(`relay connection error: could not reach ${relayUrl} (${UNREACHABLE_HINT}${proxyHint()})`)
       })
 
       ws.addEventListener('close', () => {

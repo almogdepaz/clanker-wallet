@@ -14,7 +14,7 @@ npx clanker-wallet
 bunx clanker-wallet
 ```
 
-Running in a sandbox (e.g. Claude Code)? Allow a WebSocket to the relay, `wss://relay.clanker-wallet.xyz` (the `relay` URL in the pairing JSON), or commands fail with exit code 3. `pair` also writes `~/.clanker-wallet/` (see [State](#state)).
+Running in a sandbox (e.g. Claude Code)? Allow a WebSocket to the relay, `wss://relay.clanker-wallet.xyz/ws` (the `relay` URL in the pairing JSON), or `tx` fails with exit code 3. If the sandbox only lets traffic out through `HTTPS_PROXY`, run the CLI as `NODE_USE_ENV_PROXY=1 clanker-wallet ...` (Node 24+); Node ignores the proxy otherwise. `pair` writes `~/.clanker-wallet/` and the other commands write there too, so allow writes (see [State](#state)).
 
 ## Quick Start
 

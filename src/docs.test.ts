@@ -66,8 +66,12 @@ describe('documented contract', () => {
   // the first real agent run stalled in a claude code sandbox: wss to the relay and writes to ~ were blocked
   it.each(['SKILL.md', 'README.md', 'llms-full.txt'])('%s tells sandboxed agents what the cli needs', (doc) => {
     const text = read(doc)
-    expect(text).toContain('wss://relay.clanker-wallet.xyz')
+    expect(text).toContain('wss://relay.clanker-wallet.xyz/ws')
+    // node's WebSocket ignores the sandbox's HTTPS_PROXY without it
+    expect(text).toContain('NODE_USE_ENV_PROXY=1')
+    // every command writes there, not only pair
     expect(text).toMatch(/writes? .*`~\/\.clanker-wallet\/`/)
+    expect(text).toMatch(/allow writes/i)
     expect(text).toMatch(/"mode":\s?"managed"/)
     expect(text).toMatch(/in the background/)
   })

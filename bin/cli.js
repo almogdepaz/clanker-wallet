@@ -241,7 +241,8 @@ exit codes:
   0  success
   1  rejected by human
   2  timeout
-  3  connection error (in a sandbox or behind a firewall, allow the relay host, wss://relay.clanker-wallet.xyz by default)
+  3  connection error (in a sandbox or behind a firewall, allow the relay host, wss://relay.clanker-wallet.xyz/ws by default;
+     behind HTTPS_PROXY run with NODE_USE_ENV_PROXY=1)
   4  not paired
   5  invalid arguments
 
