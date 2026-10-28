@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { MAX_WAIT_SECONDS, MCP_TOOLS } from './mcp.js'
 import { validateTransfer, validateTx } from './validate.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -119,5 +120,33 @@ describe('documented contract', () => {
     const text = read(doc)
     expect(text).toContain('pip install clanker-wallet')
     expect(text).toMatch(/Python 3\.10\+|Python ≥ ?3\.10/)
+  })
+})
+
+describe('documented mcp server', () => {
+  const MCP_DOCS = ['SKILL.md', 'README.md', 'llms-full.txt']
+  const SERVER_ENTRY = { command: 'npx', args: ['-y', 'clanker-wallet', 'mcp'] }
+
+  /** every fenced json block that configures mcpServers */
+  const mcpConfigs = (text: string) => [...text.matchAll(/```json\r?\n([\s\S]*?)```/g)]
+    .map((m) => m[1])
+    .filter((block) => block.includes('mcpServers'))
+    .map((block) => JSON.parse(block))
+
+  it.each(MCP_DOCS)('%s documents every mcp tool', (doc) => {
+    const text = read(doc)
+    expect(text).toMatch(/^##+ MCP/m)
+    for (const tool of MCP_TOOLS) expect(text, tool.name).toContain(tool.name)
+    expect(text).toContain(`\`wait_seconds\` (at most ${MAX_WAIT_SECONDS})`)
+  })
+
+  it.each(MCP_DOCS)('%s gives a parseable stdio config for Claude Desktop, Cursor and other hosts, and the Claude Code command', (doc) => {
+    const text = read(doc)
+    const configs = mcpConfigs(text)
+    expect(configs.length).toBeGreaterThan(0)
+    for (const config of configs) expect(config.mcpServers['clanker-wallet']).toEqual(SERVER_ENTRY)
+    expect(text).toContain('claude mcp add clanker-wallet -- npx -y clanker-wallet mcp')
+    expect(text).toContain('Claude Desktop')
+    expect(text).toContain('Cursor')
   })
 })

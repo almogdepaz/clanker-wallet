@@ -191,6 +191,37 @@ clanker-wallet whoami
 # → {"agent_id":"agent_abc123","public_key":"ab12cd34ef567890...","fingerprint":"ab12 cd34 ef56 7890"}
 ```
 
+## MCP (assistants)
+
+`clanker-wallet mcp` runs an MCP server over stdio, so an assistant (Claude Desktop, Claude Code, Cursor, or another MCP host that runs local commands) can ask for transactions as tool calls. The human approves every request on their own device; the server holds no wallet keys. It uses the CLI's identity and pairings in `~/.clanker-wallet/`, so pair first (`clanker-wallet pair '<JSON>'`, once per chain family). In a sandbox the server needs the same relay access and `~/.clanker-wallet/` writes as the CLI.
+
+If your host supports MCP, the human can add the server instead of you running `tx` / `send`:
+
+Claude Code:
+
+```bash
+claude mcp add clanker-wallet -- npx -y clanker-wallet mcp
+```
+
+Claude Desktop (`claude_desktop_config.json`), Cursor (`~/.cursor/mcp.json`), and any other MCP host that runs local stdio servers (command `npx`, args `-y clanker-wallet mcp`):
+
+```json
+{
+  "mcpServers": {
+    "clanker-wallet": { "command": "npx", "args": ["-y", "clanker-wallet", "mcp"] }
+  }
+}
+```
+
+| Tool | Arguments | Returns |
+|------|-----------|---------|
+| `request_evm_tx` | `chain_id`, `to`, `value` (wei, integer string), `data` (default `0x`), `reason`, optional `urgency` / `expected_outcome` | `{"request_id":"req_...","status":"pending","expires_at":"..."}` |
+| `request_transfer` | `family` (`bitcoin`), `network` (`mainnet`, `testnet`, `signet`), `to`, `amount` (sats, integer string), `reason`, optional `urgency` / `expected_outcome` | as above |
+| `get_request` | `request_id`, optional `wait_seconds` (at most 50) | `status`: `pending`, `approved` (with `tx_hash`), `rejected`, `failed` (with `error`) or `expired` |
+| `list_pairings` | none | `agent_id`, `fingerprint`, and the paired families (`evm`, `bitcoin`) with network, wallet and mode |
+
+Flow: call `list_pairings` to see which chains you can use, call `request_evm_tx` or `request_transfer` (same rules as `tx` / `send`: wei and sats as integer strings, real addresses), tell the human a request is waiting (see "Transaction notifications"), then call `get_request` with `wait_seconds` until the status is no longer `pending`. Invalid input or a missing pairing comes back as a tool error and nothing is sent. Each request expires after 1 h, and a restarted server no longer knows its earlier requests. Chia is not offered over MCP yet.
+
 ## Troubleshooting
 
 - **exit code 5 / "invalid --flag: ..."** — fix the named flag; nothing was sent. Usually a placeholder `--to`, a `--value` in ETH instead of wei, or `--data` that isn't even-length hex
