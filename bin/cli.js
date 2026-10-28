@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 import { ClankerWallet, InvalidTxError, validateTransfer, validateTx } from '../dist/index.js'
+import { createMcpServer, MAX_WAIT_SECONDS } from '../dist/mcp.js'
 import { readFileSync, writeFileSync, mkdirSync, existsSync, chmodSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
+import { createInterface } from 'readline'
 
 // ── constants ────────────────────────────────────────────────────────
 const STATE_DIR = join(homedir(), '.clanker-wallet')
@@ -308,9 +310,53 @@ function cmdWhoami() {
   })
 }
 
+function packageVersion() {
+  return JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version
+}
+
 function cmdVersion() {
-  const { version } = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
-  process.stdout.write(version + '\n')
+  process.stdout.write(packageVersion() + '\n')
+}
+
+function showMcpHelp() {
+  process.stderr.write(`clanker-wallet mcp — MCP server over stdio for assistants (Claude Desktop, Claude Code, Cursor, ...)
+
+uses this agent's identity and pairings (~/.clanker-wallet/); pair first with: clanker-wallet pair '<JSON>'
+every request waits for the human to approve it on their own device.
+
+tools:
+  request_evm_tx    ask for an evm transaction (value in wei, integer string) -> { request_id }
+  request_transfer  ask for a bitcoin send (amount in sats, integer string) -> { request_id }
+  get_request       pending | approved (tx_hash) | rejected | failed | expired; wait_seconds up to ${MAX_WAIT_SECONDS}
+  list_pairings     paired chain families, networks, wallets, and the agent fingerprint
+
+claude code:     claude mcp add clanker-wallet -- npx -y clanker-wallet mcp
+other hosts:     {"mcpServers":{"clanker-wallet":{"command":"npx","args":["-y","clanker-wallet","mcp"]}}}
+
+requests are kept in memory: a restart forgets pending ones, and each expires after 1 h.
+docs: https://clanker-wallet.xyz/SKILL.md
+`)
+}
+
+/** serve MCP on stdin/stdout until stdin ends; stdout carries only protocol messages */
+async function cmdMcp(flags) {
+  if (flags.help) return showMcpHelp()
+
+  const identity = getWallet()
+  const server = createMcpServer({
+    version: packageVersion(),
+    identity: { agent_id: identity.agentId, fingerprint: fingerprint(hex(identity.publicKey)) },
+    loadPairing,
+    wallet: pairedWallet,
+  })
+  const lines = createInterface({ input: process.stdin, crlfDelay: Infinity })
+  // each line is answered when it settles, so a get_request that waits never holds up the others
+  lines.on('line', (line) => {
+    server.handleLine(line).then((reply) => { if (reply) process.stdout.write(reply + '\n') })
+  })
+  await new Promise((resolve) => lines.on('close', resolve))
+  // the host is gone: drop pending requests (their relay sockets would keep the process alive)
+  process.exit(EXIT.OK)
 }
 
 function showHelp() {
@@ -322,6 +368,7 @@ commands:
   send            send btc or xch; the human's wallet builds it (blocks until approved/rejected)
   status          check pairing status (one pairing per chain family: evm, bitcoin, chia)
   whoami          show agent identity
+  mcp             run an MCP server over stdio for assistants (Claude Desktop/Code, Cursor, ...); mcp --help
 
 tx flags:
   --chain <id>                 chain ID (required) — 1, 8453, 84532 (base sepolia), etc.
@@ -382,6 +429,9 @@ switch (cmd) {
     break
   case 'whoami':
     cmdWhoami()
+    break
+  case 'mcp':
+    await cmdMcp(flags)
     break
   case '--version':
   case '-v':
