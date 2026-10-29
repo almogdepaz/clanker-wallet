@@ -199,7 +199,6 @@ export function createMcpServer(options: McpServerOptions): { handleLine: (line:
     const pairing = options.loadPairing(family)
     if (!pairing) return Promise.resolve(toolError(NOT_PAIRED[family]))
     const wallet = options.wallet(pairing)
-    // stamped before the wallet starts its own timer, so its timeout never lands before expiresAt
     const expiresAt = Date.now() + ttl
     // a cancel stops the wallet only before it sends: once delivered, the human can still approve, so keep waiting
     const unsent = new AbortController()
@@ -207,10 +206,15 @@ export function createMcpServer(options: McpServerOptions): { handleLine: (line:
     return new Promise((resolve) => {
       let record: RequestRecord | undefined
       let answered: { status: string } | undefined
+      // this timer decides expiry, not a Date.now() check: timers can fire a millisecond before the clock reaches their
+      // target. it is set before the wallet's own timer of the same ttl, and node runs equal delays in the order they
+      // were set, so the request is expired before the wallet's timeout rejection arrives
+      const expiry = setTimeout(() => record?.settle('expired'), ttl)
       cancelled.addEventListener('abort', () => { if (!record) unsent.abort() })
       wallet.on('request_sent', ({ request_id }) => {
         record = newRecord(request_id, expiresAt)
         records.set(request_id, record)
+        record.settled.then(() => clearTimeout(expiry))
         resolve(toolResult({ request_id, status: 'pending', expires_at: new Date(expiresAt).toISOString() }))
       })
       wallet.on('response', (response) => { answered = response })
@@ -219,14 +223,17 @@ export function createMcpServer(options: McpServerOptions): { handleLine: (line:
         (txHash) => record!.settle('approved', { tx_hash: txHash }),
         (err: unknown) => {
           const message = err instanceof Error ? err.message : String(err)
-          if (!record) return resolve(toolError(message))
+          if (!record) {
+            clearTimeout(expiry)
+            return resolve(toolError(message))
+          }
           if (answered?.status === 'rejected') record.settle('rejected')
           else if (answered) record.settle('failed', { error: message })
           // the relay refused the request (rate limit, size) and dropped it: nothing reached the human
           else if (err instanceof RelayError) record.settle('failed', { error: message })
           // delivered, then the relay connection dropped: the relay still holds the request for the human
-          else if (Date.now() < expiresAt) record.settle('unknown', { error: `${message}; ${STILL_APPROVABLE}` })
-          else record.settle('expired')
+          // (after expiry the record is already settled and this changes nothing)
+          else record.settle('unknown', { error: `${message}; ${STILL_APPROVABLE}` })
         },
       )
     })
@@ -276,14 +283,12 @@ export function createMcpServer(options: McpServerOptions): { handleLine: (line:
     const waitMs = Math.min(wait_seconds, MAX_WAIT_SECONDS) * 1000
     if (record.status === 'pending' && waitMs > 0) {
       let timer: ReturnType<typeof setTimeout> | undefined
-      await Promise.race([
-        record.settled,
-        new Promise((r) => { timer = setTimeout(r, Math.min(waitMs, record.expiresAt - Date.now())) }),
-        new Promise((r) => cancelled.addEventListener('abort', r, { once: true })),
-      ])
+      const waits = [record.settled, new Promise((r) => cancelled.addEventListener('abort', r, { once: true }))]
+      // a wait that reaches past expiry ends when the request's expiry timer settles it
+      if (waitMs < record.expiresAt - Date.now()) waits.push(new Promise((r) => { timer = setTimeout(r, waitMs) }))
+      await Promise.race(waits)
       clearTimeout(timer)
     }
-    if (record.status === 'pending' && Date.now() >= record.expiresAt) record.settle('expired')
 
     const { status, tx_hash, error } = record
     if (status === 'pending') return toolResult({ request_id, status, expires_at: new Date(record.expiresAt).toISOString() })

@@ -376,6 +376,73 @@ describe('get_request', () => {
   })
 })
 
+describe('expiry', () => {
+  // Date stays real while timers are fake, so a timer fires before Date.now() reaches its target: node's real timers do that by a millisecond
+  const fakeTimersOnly = () => vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+
+  /**
+   * a server whose wallet reports the request delivered, then never answers, times out after timeout_ms like the real one,
+   * or is approved; no relay, so fake timers can't stall a socket
+   */
+  function stubServer(ttl: number, outcome: 'never' | 'timesOut' | 'approved' = 'never') {
+    return server({ evm: evmPairing(toHex(randomBytes(32))) }, {
+      requestTtlMs: ttl,
+      onWallet: (wallet) => {
+        vi.spyOn(wallet, 'requestTx').mockImplementation((o) => new Promise((resolve, reject) => {
+          setTimeout(() => {
+            (wallet as any).emit('request_sent', { request_id: 'req_1_expiring' })
+            if (outcome === 'approved') resolve(TX_HASH)
+          })
+          if (outcome === 'timesOut') setTimeout(() => reject(new Error(`request req_1_expiring timed out after ${o.timeout_ms}ms`)), o.timeout_ms)
+        }))
+      },
+    })
+  }
+
+  async function send(call: ReturnType<typeof server>['call']) {
+    const sending = call('request_evm_tx', evmArgs)
+    await vi.advanceTimersByTimeAsync(0)
+    return (await sending).body.request_id as string
+  }
+
+  it('a get_request waiting through expiry reports expired, even when its timer fires before the clock reaches expires_at', async () => {
+    fakeTimersOnly()
+    try {
+      const { call } = stubServer(400)
+      const request_id = await send(call)
+      const waiting = call('get_request', { request_id, wait_seconds: 5 })
+      await vi.advanceTimersByTimeAsync(400)
+      expect((await waiting).body).toEqual({ request_id, status: 'expired' })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('the wallet timing out at the ttl reports expired, not unknown, even before the clock reaches expires_at', async () => {
+    fakeTimersOnly()
+    try {
+      const { call } = stubServer(400, 'timesOut')
+      const request_id = await send(call)
+      await vi.advanceTimersByTimeAsync(400)
+      expect((await call('get_request', { request_id })).body).toEqual({ request_id, status: 'expired' })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('leaves no expiry timer behind once the request settles', async () => {
+    fakeTimersOnly()
+    try {
+      const { call } = stubServer(400, 'approved')
+      const request_id = await send(call)
+      expect((await call('get_request', { request_id })).body.status).toBe('approved')
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
 describe('list_pairings', () => {
   it('lists the evm and bitcoin pairings with the agent fingerprint, not chia', async () => {
     const { call } = server({
