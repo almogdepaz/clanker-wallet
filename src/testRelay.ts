@@ -63,6 +63,8 @@ function decodeFrames(buf: Buffer): [{ opcode: number; data: Buffer }[], Buffer]
 export interface TestRelayOptions {
   /** delay `joined` by this long; Infinity never answers join (a relay or proxy that accepts the socket and stalls) */
   joinDelayMs?: number
+  /** answer every `message` with this relay error and drop it, as the relay does for a refused request (rate limited, too large) */
+  refuseMessages?: string
 }
 
 export async function startTestRelay(options: TestRelayOptions = {}): Promise<TestRelay> {
@@ -112,6 +114,8 @@ export async function startTestRelay(options: TestRelayOptions = {}): Promise<Te
           const delay = options.joinDelayMs ?? 0
           if (delay === 0) join()
           else if (Number.isFinite(delay)) setTimeout(join, delay)
+        } else if (msg.type === 'message' && options.refuseMessages !== undefined) {
+          socket.write(encodeTextFrame(JSON.stringify({ type: 'error', message: options.refuseMessages })))
         } else if (msg.type === 'message' && room && msg.room === room) {
           const out = encodeTextFrame(JSON.stringify({ type: 'message', room, payload: msg.payload }))
           for (const peer of rooms.get(room) ?? []) {

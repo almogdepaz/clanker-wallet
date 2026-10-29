@@ -1,4 +1,4 @@
-import type { ClankerWallet } from './client.js'
+import { RelayError, type ClankerWallet } from './client.js'
 import type { TxContext } from './types.js'
 import { InvalidTxError, validateTransfer, validateTx } from './validate.js'
 
@@ -222,6 +222,8 @@ export function createMcpServer(options: McpServerOptions): { handleLine: (line:
           if (!record) return resolve(toolError(message))
           if (answered?.status === 'rejected') record.settle('rejected')
           else if (answered) record.settle('failed', { error: message })
+          // the relay refused the request (rate limit, size) and dropped it: nothing reached the human
+          else if (err instanceof RelayError) record.settle('failed', { error: message })
           // delivered, then the relay connection dropped: the relay still holds the request for the human
           else if (Date.now() < expiresAt) record.settle('unknown', { error: `${message}; ${STILL_APPROVABLE}` })
           else record.settle('expired')

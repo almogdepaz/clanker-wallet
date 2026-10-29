@@ -16,6 +16,14 @@ function proxyHint(): string {
     : ''
 }
 
+/** the relay answered with an error frame (rate limited, message too large, ...): it refused the request instead of passing it on */
+export class RelayError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'RelayError'
+  }
+}
+
 export interface ClankerWalletOptions {
   /** agent display name (informational) */
   agentName?: string
@@ -202,10 +210,11 @@ export class ClankerWallet extends TypedEmitter {
         }
       }
 
-      const fail = (message: string): void => {
+      const fail = (error: string | Error): void => {
+        const err = typeof error === 'string' ? new Error(error) : error
         cleanup()
-        this.emit('error', { message })
-        reject(new Error(message))
+        this.emit('error', { message: err.message })
+        reject(err)
       }
 
       if (signal?.aborted) {
@@ -319,7 +328,7 @@ export class ClankerWallet extends TypedEmitter {
         }
 
         if (msg.type === 'error') {
-          fail(`relay error: ${msg.message}`)
+          fail(new RelayError(`relay error: ${msg.message}`))
         }
       })
     })

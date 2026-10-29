@@ -152,6 +152,23 @@ describe('cli tx', () => {
     expect(error).toContain(deadRelay)
   })
 
+  it('reports a relay refusing the request as before: exit 3, status error, the relay message', async () => {
+    const refusing = await startTestRelay({ refuseMessages: 'room rate limited' })
+    try {
+      const home = mkdtempSync(join(tmpdir(), 'clanker-cli-'))
+      runCli(home, 'pair', JSON.stringify({ version: 1, pubkey: randomBytes(32).toString('hex'), relay: refusing.url, wallet: WALLET }))
+      const child = spawn(process.execPath, [CLI, 'tx', '--chain', '84532', '--to', TO, '--value', '1', '--timeout', '5000'], {
+        env: { ...process.env, HOME: home },
+      })
+      let stdout = ''
+      child.stdout.on('data', (chunk) => { stdout += chunk })
+      expect(await new Promise((resolve) => child.on('exit', resolve))).toBe(3)
+      expect(JSON.parse(stdout)).toEqual({ status: 'error', error: 'relay error: room rate limited' })
+    } finally {
+      await refusing.close()
+    }
+  })
+
   // claude code's sandbox only lets traffic out through HTTPS_PROXY, which node's WebSocket ignores without NODE_USE_ENV_PROXY
   it.each([
     ['proxy set, node not told to use it', { HTTPS_PROXY: 'http://127.0.0.1:1' }, true],

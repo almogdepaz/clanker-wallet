@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeAll, afterAll, vi } from 'vitest'
 import nacl from 'tweetnacl'
-import { ClankerWallet } from './client.js'
+import { ClankerWallet, RelayError } from './client.js'
 import { encryptMessage, decryptMessage, toHex, fromHex } from './crypto.js'
 import type { AgentEnvelope, TxRequest, TxResponse } from './types.js'
 import { joinAsHuman, startTestRelay, type TestRelay } from './testRelay.js'
@@ -576,6 +576,29 @@ describe('join timeout and abort', () => {
     await expect(request).rejects.toThrow(/cancelled/)
     await sleep(800)
     expect(sentOn(late).length).toBe(before)
+  })
+
+  test('a relay error frame refusing the request rejects with a RelayError, same message', async () => {
+    const refusing = await startTestRelay({ refuseMessages: 'room rate limited' })
+    const agent = agentOn(refusing.url)
+    const sent = vi.fn()
+    agent.on('request_sent', sent)
+    const err = await agent.requestTx({ ...tx, timeout_ms: 10000 }).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(RelayError)
+    expect((err as Error).message).toBe('relay error: room rate limited')
+    expect(sent).toHaveBeenCalledOnce()
+    await refusing.close()
+  })
+
+  test('a dropped relay connection is not a RelayError', async () => {
+    const dropping = await startTestRelay()
+    const human = await joinAsHuman(dropping.url)
+    const agent = new ClankerWallet()
+    agent.pair(JSON.stringify({ version: 1, pubkey: human.room, relay: dropping.url, wallet: RECIPIENT }))
+    agent.on('request_sent', () => { void dropping.close() })
+    const err = await agent.requestTx({ ...tx, timeout_ms: 10000 }).catch((e: unknown) => e)
+    expect((err as Error).message).toMatch(/connection closed/)
+    expect(err).not.toBeInstanceOf(RelayError)
   })
 
   test('an already aborted signal fails before connecting', async () => {

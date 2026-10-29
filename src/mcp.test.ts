@@ -214,6 +214,15 @@ describe('request_evm_tx + get_request', () => {
     h.close()
   })
 
+  it('reports failed, not unknown, when the relay refuses the request: nothing reached the human', async () => {
+    const refusing = await startTestRelay({ refuseMessages: 'room rate limited' })
+    const { call } = server({ evm: evmPairing(toHex(randomBytes(32)), { relay: refusing.url }) })
+    const { request_id } = (await call('request_evm_tx', evmArgs)).body
+    const { body } = await call('get_request', { request_id, wait_seconds: 5 })
+    expect(body).toEqual({ request_id, status: 'failed', error: 'relay error: room rate limited' })
+    await refusing.close()
+  })
+
   it('returns from wait_seconds as soon as the human answers', async () => {
     const h = await human(async (req) => {
       await new Promise((r) => setTimeout(r, 300))
