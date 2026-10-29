@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { MAX_WAIT_SECONDS, MCP_TOOLS } from './mcp.js'
+import { MAX_WAIT_SECONDS, MCP_TOOLS, REQUEST_STATUSES } from './mcp.js'
 import { validateTransfer, validateTx } from './validate.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -138,6 +138,40 @@ describe('documented mcp server', () => {
     expect(text).toMatch(/^##+ MCP/m)
     for (const tool of MCP_TOOLS) expect(text, tool.name).toContain(tool.name)
     expect(text).toContain(`\`wait_seconds\` (at most ${MAX_WAIT_SECONDS})`)
+  })
+
+  /** the tool's row in the doc's tools table */
+  const toolRow = (text: string, name: string) => {
+    const rows = text.split('\n').filter((line) => line.startsWith(`| \`${name}\` |`))
+    expect(rows, `${name} row`).toHaveLength(1)
+    return rows[0]
+  }
+
+  it.each(MCP_DOCS)('%s lists every argument of each tool in its row, amounts with the unit the schema states', (doc) => {
+    const text = read(doc)
+    for (const tool of MCP_TOOLS) {
+      const row = toolRow(text, tool.name)
+      for (const [key, schema] of Object.entries(tool.inputSchema.properties) as [string, { description?: string }][]) {
+        expect(row, `${tool.name} ${key}`).toContain(`\`${key}\``)
+        const unit = schema.description?.match(/^integer string in (\w+)/)?.[1]
+        if (unit) expect(row, `${tool.name} ${key} unit`).toContain(`\`${key}\` (${unit}, integer string)`)
+      }
+    }
+    // the units themselves, so a schema that stopped naming them can't pass vacuously
+    expect(toolRow(text, 'request_evm_tx')).toContain('`value` (wei, integer string)')
+    expect(toolRow(text, 'request_transfer')).toContain('`amount` (sats, integer string)')
+  })
+
+  it.each(MCP_DOCS)('%s lists exactly the statuses get_request returns', (doc) => {
+    const returns = toolRow(read(doc), 'get_request').split('`status`:')[1]
+    const statuses = [...returns.replace(/\(with [^)]*\)/g, '').matchAll(/`([a-z_]+)`/g)].map((m) => m[1])
+    expect(statuses).toEqual([...REQUEST_STATUSES])
+  })
+
+  it.each(MCP_DOCS)('%s names the Claude Desktop and Cursor config files', (doc) => {
+    const text = read(doc)
+    expect(text).toContain('Claude Desktop (`claude_desktop_config.json`)')
+    expect(text).toContain('Cursor (`~/.cursor/mcp.json`)')
   })
 
   it.each(MCP_DOCS)('%s gives a parseable stdio config for Claude Desktop, Cursor and other hosts, and the Claude Code command', (doc) => {

@@ -120,7 +120,9 @@ const INSTRUCTIONS = 'clanker-wallet sends transaction requests to a human, who 
   'you never hold keys. Call list_pairings to see which chains you can use, request_evm_tx or request_transfer to ask, ' +
   'and get_request (with wait_seconds) until the request is no longer pending.'
 
-type RequestStatus = 'pending' | 'approved' | 'rejected' | 'failed' | 'unknown' | 'expired'
+/** what get_request reports, in the order the docs list them */
+export const REQUEST_STATUSES = ['pending', 'approved', 'rejected', 'failed', 'unknown', 'expired'] as const
+type RequestStatus = typeof REQUEST_STATUSES[number]
 
 const STILL_APPROVABLE = 'the request was delivered, so the human may still approve it in their wallet: ask them before sending it again'
 

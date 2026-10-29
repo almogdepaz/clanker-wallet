@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { randomBytes } from 'node:crypto'
 import { ClankerWallet } from './client.js'
 import { toHex } from './crypto.js'
-import { createMcpServer, MAX_WAIT_SECONDS, MCP_TOOLS, type SavedPairing } from './mcp.js'
+import { createMcpServer, MAX_WAIT_SECONDS, MCP_TOOLS, REQUEST_STATUSES, type SavedPairing } from './mcp.js'
 import { joinAsHuman, startTestRelay, type TestHuman, type TestRelay } from './testRelay.js'
 
 const TO = '0x2222222222222222222222222222222222222222'
@@ -124,6 +124,7 @@ describe('mcp protocol', () => {
     }
     expect(byName.request_evm_tx.description).toContain('wei')
     expect(byName.request_transfer.description).toContain('sats')
+    for (const status of REQUEST_STATUSES) expect(byName.get_request.description).toContain(status)
     expect(byName.get_request.inputSchema.properties.wait_seconds.maximum).toBe(MAX_WAIT_SECONDS)
     expect(MAX_WAIT_SECONDS).toBeLessThanOrEqual(50)
     expect(result.tools).toEqual(MCP_TOOLS)
