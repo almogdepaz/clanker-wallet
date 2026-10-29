@@ -1,8 +1,20 @@
 import { decryptMessage, encryptMessage, fromHex, generateKeypair, keypairFromSecret, signMessage, signingKeypairFromSeed, toHex } from './crypto.js'
 import { TypedEmitter } from './events.js'
-import type { AgentEnvelope, PairingData, RequestTxOptions, TxRequest, TxResponse } from './types.js'
+import type { AgentEnvelope, PairingData, RequestTransferOptions, RequestTxOptions, TransferRequest, TxRequest, TxResponse } from './types.js'
+import { InvalidTxError, validateTransfer, validateTx } from './validate.js'
 
 const DEFAULT_TIMEOUT_MS = 3_600_000 // 1 hour
+
+const UNREACHABLE_HINT = 'if you run in a sandbox or behind a firewall, allow this host; otherwise the relay may be down or rate limiting, retry in a few seconds'
+
+/** node's WebSocket ignores HTTPS_PROXY unless NODE_USE_ENV_PROXY is set at startup, and sandboxes (claude code) only let traffic out through that proxy */
+function proxyHint(): string {
+  const env = (globalThis as { process?: { env: Record<string, string | undefined> } }).process?.env
+  if (!env || env.NODE_USE_ENV_PROXY) return ''
+  return env.HTTPS_PROXY || env.https_proxy || env.HTTP_PROXY || env.http_proxy
+    ? '; HTTPS_PROXY is set but node ignores it, rerun with NODE_USE_ENV_PROXY=1 (node 24+)'
+    : ''
+}
 
 export interface ClankerWalletOptions {
   /** agent display name (informational) */
@@ -18,6 +30,9 @@ interface PairingState {
   relayUrl: string
   humanWallet: string | null
   mode: 'encrypted' | 'managed'
+  /** absent for an evm pairing */
+  chainFamily: string | null
+  chainNetwork: string | null
 }
 
 export class ClankerWallet extends TypedEmitter {
@@ -71,6 +86,8 @@ export class ClankerWallet extends TypedEmitter {
       relayUrl: data.relay,
       humanWallet: data.wallet || null,
       mode: data.mode || 'encrypted',
+      chainFamily: data.chain_family || null,
+      chainNetwork: data.chain_network || null,
     }
 
     this.emit('paired', { relay: data.relay, wallet: data.wallet || '' })
@@ -88,21 +105,76 @@ export class ClankerWallet extends TypedEmitter {
       throw new Error('not paired — call pair() first')
     }
 
-    const { humanPubkey, humanPubkeyHex, relayUrl, humanWallet, mode } = this.pairing
-    const timeoutMs = options.timeout_ms ?? DEFAULT_TIMEOUT_MS
-    const requestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+    // a bitcoin or chia pairing takes transfers only: its wallet can't sign an evm tx
+    const { chainFamily } = this.pairing
+    if (chainFamily && chainFamily !== 'evm') {
+      throw new InvalidTxError('chain_family', `this pairing is for ${chainFamily}: use requestTransfer for bitcoin or chia`)
+    }
+
+    // reject malformed requests before anything reaches the relay
+    const { chain_id, transaction } = validateTx(options.chain_id, options.transaction)
+
+    const { humanWallet, mode } = this.pairing
 
     const txRequest: TxRequest = {
-      request_id: requestId,
+      request_id: newRequestId(),
       agent_id: this.agentId,
       timestamp: new Date().toISOString(),
-      chain_id: options.chain_id,
-      transaction: options.transaction,
+      chain_id,
+      transaction,
       context: options.context,
       signature: '', // set below after signing
     }
 
     txRequest.signature = signMessage(JSON.stringify(txRequest), this.signingSecretKey)
+
+    // managed mode: relay gets plaintext tx params so it can simulate
+    const simulate = mode === 'managed'
+      ? { from: humanWallet || '', to: transaction.to, value: transaction.value, data: transaction.data, chainId: chain_id }
+      : undefined
+
+    return this.send(txRequest, options.timeout_ms ?? DEFAULT_TIMEOUT_MS, simulate)
+  }
+
+  /**
+   * send a bitcoin / chia transfer to the paired human and wait for their response.
+   * the family comes from the pairing; the human's wallet builds, signs and broadcasts
+   * the send. resolves with the txid on approval.
+   * throws InvalidTxError (before anything is sent), or on rejection, timeout, or connection error.
+   */
+  async requestTransfer(options: RequestTransferOptions): Promise<string> {
+    if (!this.pairing) {
+      throw new Error('not paired — call pair() first')
+    }
+
+    const { chainFamily, chainNetwork } = this.pairing
+    // reject malformed requests before anything reaches the relay
+    const { chain_family, chain_network, transfer } = validateTransfer(chainFamily, options.chain_network, options.transfer)
+    if (chainNetwork && chainNetwork !== chain_network) {
+      throw new InvalidTxError('chain_network', `this pairing is for ${chain_family} ${chainNetwork}, got "${chain_network}"`)
+    }
+
+    const request: TransferRequest = {
+      request_id: newRequestId(),
+      agent_id: this.agentId,
+      timestamp: new Date().toISOString(),
+      chain_family,
+      chain_network,
+      transfer,
+      context: options.context,
+      signature: '', // set below after signing
+    }
+
+    request.signature = signMessage(JSON.stringify(request), this.signingSecretKey)
+
+    // the relay simulator is evm-only: no simulate object for transfers, even on a managed pairing
+    return this.send(request, options.timeout_ms ?? DEFAULT_TIMEOUT_MS)
+  }
+
+  /** encrypt a signed request to the paired human, send it through the relay, and wait for the answer */
+  private send(request: TxRequest | TransferRequest, timeoutMs: number, simulate?: Record<string, unknown>): Promise<string> {
+    const { humanPubkey, humanPubkeyHex, relayUrl } = this.pairing!
+    const requestId = request.request_id
 
     return new Promise<string>((resolve, reject) => {
       let ws: WebSocket
@@ -139,7 +211,8 @@ export class ClankerWallet extends TypedEmitter {
       }
 
       ws.addEventListener('error', () => {
-        if (!settled) fail('relay connection error')
+        // node's WebSocket error event carries no cause, so name the url: a sandbox or firewall blocking it looks the same as an outage
+        if (!settled) fail(`relay connection error: could not reach ${relayUrl} (${UNREACHABLE_HINT}${proxyHint()})`)
       })
 
       ws.addEventListener('close', () => {
@@ -167,7 +240,7 @@ export class ClankerWallet extends TypedEmitter {
         if (msg.type === 'joined') {
           this.emit('connected', { room: humanPubkeyHex })
 
-          const ciphertext = encryptMessage(JSON.stringify(txRequest), humanPubkey, this.secretKey)
+          const ciphertext = encryptMessage(JSON.stringify(request), humanPubkey, this.secretKey)
           const envelope: AgentEnvelope = {
             sender_pubkey: this.agentPubkeyHex,
             ciphertext,
@@ -178,16 +251,7 @@ export class ClankerWallet extends TypedEmitter {
             room: humanPubkeyHex,
             payload: JSON.stringify(envelope),
           }
-          // managed mode: relay gets plaintext tx params so it can simulate
-          if (mode === 'managed') {
-            wsMsg.simulate = {
-              from: humanWallet || '',
-              to: options.transaction.to,
-              value: options.transaction.value,
-              data: options.transaction.data,
-              chainId: options.chain_id,
-            }
-          }
+          if (simulate) wsMsg.simulate = simulate
           ws.send(JSON.stringify(wsMsg))
           this.emit('request_sent', { request_id: requestId })
           return
@@ -233,4 +297,8 @@ export class ClankerWallet extends TypedEmitter {
       })
     })
   }
+}
+
+function newRequestId(): string {
+  return `req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
 }

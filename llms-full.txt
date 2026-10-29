@@ -6,15 +6,19 @@
 
 Clanker Wallet bridges AI agents and human-controlled wallets. The agent proposes a transaction, the human reviews it in a web app (with simulation, risk flags, and full tx details), then approves or rejects. All communication is end-to-end encrypted using NaCl box.
 
+EVM chains take raw transactions (`tx`). Bitcoin and chia take transfers (`send`): the agent names the network, recipient and amount, and the human's wallet builds, signs and broadcasts the transaction.
+
 ## Install
 
 ```bash
 npm install -g clanker-wallet    # global CLI
 npm install clanker-wallet       # TypeScript SDK
-pip install clanker-wallet       # Python SDK
+pip install clanker-wallet       # Python SDK (Python 3.10+)
 ```
 
 Or use without installing: `npx clanker-wallet` / `bunx clanker-wallet`
+
+Running in a sandbox (e.g. Claude Code)? Allow a WebSocket to the relay, `wss://relay.clanker-wallet.xyz/ws` (the `relay` URL in the pairing JSON), or `tx` fails with exit code 3. If the sandbox only lets traffic out through `HTTPS_PROXY`, run the CLI as `NODE_USE_ENV_PROXY=1 clanker-wallet ...` (Node 24+); Node ignores the proxy otherwise. `pair` writes your identity and the pairing to `~/.clanker-wallet/`, and the other commands write there too, so allow writes.
 
 ## Quick Start (CLI)
 
@@ -26,31 +30,54 @@ clanker-wallet pair '{"version":1,"pubkey":"ab12...","relay":"wss://...","wallet
 # 3. Check pairing
 clanker-wallet status
 
-# 4. Send a transaction (blocks until human approves/rejects)
-clanker-wallet tx --chain 1 --to 0xRecipient --value 1000000000000000000 --reason "Send 1 ETH"
+# 4. Send a transaction (blocks until human approves/rejects; up to 1 h by default)
+#    0.001 ETH on Base Sepolia (84532) to the burn address. --value is in wei.
+clanker-wallet tx --chain 84532 --to 0x000000000000000000000000000000000000dEaD --value 1000000000000000 --reason "Send 0.001 ETH on Base Sepolia"
 ```
 
 ## CLI Reference
 
 ### `clanker-wallet pair '<json>'`
-Pair with a human wallet. Run once — saves to `~/.clanker-wallet/`.
+Pair with a human wallet. Run once per chain family — `pair` writes identity and pairing to `~/.clanker-wallet/`.
+
+The web app's evm, bitcoin and chia tabs each give their own pairing JSON (bitcoin and chia add `"chain_family":"bitcoin"` / `"chain_family":"chia"`). Each family is kept in `~/.clanker-wallet/pairings/<family>.json`, so pairing one never replaces another. A `~/.clanker-wallet/pairing.json` written by 0.4.x is still read as the evm pairing and never moved, rewritten or deleted.
+
+If the pairing JSON contains `"mode":"managed"`, the relay simulates each transaction for the human's review screen, so `tx` also sends the plain transaction fields to it. Otherwise the relay only sees ciphertext. Pair with the JSON as given.
 
 ### `clanker-wallet tx [flags]`
-Request a transaction. Blocks until approved, rejected, or timeout.
+Request a transaction. Blocks until approved, rejected, or timeout (default 1 h; set `--timeout <ms>`). Malformed flags exit 5 before anything is sent. If your shell tool kills long commands, run `tx` in the background and read its output when it exits.
 
 | Flag | Required | Default | Description |
 |------|----------|---------|-------------|
-| `--chain <id>` | yes | — | Chain ID (1=Ethereum, 137=Polygon, 8453=Base, 42161=Arbitrum, 10=Optimism, 11155111=Sepolia) |
-| `--to <address>` | yes | — | Recipient/contract address |
-| `--value <wei>` | no | `0` | Value in wei (1 ETH = 1000000000000000000) |
-| `--data <hex>` | no | `0x` | Calldata (hex-encoded). Use `0x` for simple transfers. |
+| `--chain <id>` | yes | — | Chain ID (1=Ethereum, 137=Polygon, 8453=Base, 42161=Arbitrum, 10=Optimism, 11155111=Sepolia, 84532=Base Sepolia) |
+| `--to <address>` | yes | — | Recipient/contract address: `0x` + 40 hex; mixed case must pass the EIP-55 checksum |
+| `--value <wei>` | no | `0` | Value in wei, a whole number (1 ETH = 1000000000000000000) |
+| `--data <hex>` | no | `0x` | Calldata, `0x` + even-length hex. Use `0x` for simple transfers. |
 | `--reason <text>` | no | — | Human-readable reason (shown in approval UI) |
 | `--urgency <level>` | no | — | `low`, `medium`, or `high` |
 | `--expected-outcome <text>` | no | — | What will happen if approved |
-| `--timeout <ms>` | no | `3600000` | How long to wait for human response |
+| `--timeout <ms>` | no | `3600000` (1 h) | How long `tx` blocks waiting for the human |
+
+### `clanker-wallet send [flags]`
+Send bitcoin or chia through a pairing from the web app's bitcoin or chia tab. Same blocking, output and exit codes as `tx`; exit code 4 means that chain family isn't paired. On approval `tx_hash` is the bitcoin txid or the chia transaction id.
+
+```bash
+clanker-wallet send --btc testnet --to tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx --sats 1000 --reason "Send 1000 sats on bitcoin testnet"
+clanker-wallet send --xch testnet11 --to txch1qqqsyqcyq5rqwzqfpg9scrgwpugpzysnzs23v9ccrydpk8qarc0sw0amhg --mojos 1000 --fee-mojos 0 --reason "Send 1000 mojos on chia testnet11"
+```
+
+| Flag | Required | Default | Description |
+|------|----------|---------|-------------|
+| `--btc <network>` | one of `--btc`/`--xch` | — | `mainnet`, `testnet` or `signet` (no default network) |
+| `--xch <network>` | one of `--btc`/`--xch` | — | `mainnet` or `testnet11` |
+| `--to <address>` | yes | — | On that network: segwit `bc1...` (mainnet) / `tb1...` (testnet, signet), or `xch1...` / `txch1...`. Legacy `1...`/`3...` bitcoin addresses are refused |
+| `--sats <n>` | with `--btc` | — | Whole sats (1 BTC = 100000000). The wallet sets the fee |
+| `--mojos <n>` | with `--xch` | — | Whole mojos (1 XCH = 1000000000000) |
+| `--fee-mojos <n>` | no (chia only) | `0` | Chia fee, shown to the human before approval |
+| `--reason`, `--urgency`, `--expected-outcome`, `--timeout` | no | — | As for `tx` |
 
 ### `clanker-wallet status`
-Check pairing status. Returns JSON with agent_id, paired status, wallet address, relay URL.
+Check pairing status. Returns JSON with agent_id, paired status (any family), the evm pairing's wallet address and relay URL, and `pairings`: every paired family (`evm`, `bitcoin`, `chia`) with its wallet, relay, mode and chain_network.
 
 ### `clanker-wallet whoami`
 Show agent identity (agent_id and public_key).
@@ -62,9 +89,9 @@ Show agent identity (agent_id and public_key).
 | 0 | Transaction approved |
 | 1 | Transaction rejected by human |
 | 2 | Timeout (human didn't respond) |
-| 3 | Connection/relay error |
-| 4 | Not paired |
-| 5 | Invalid arguments |
+| 3 | Connection/relay error (in a sandbox or behind a firewall, allow the relay host) |
+| 4 | Not paired (`send`: not paired for that chain family) |
+| 5 | Invalid arguments (bad or missing flag; nothing sent) |
 
 ## TypeScript SDK
 
@@ -76,24 +103,41 @@ const wallet = new ClankerWallet({ agentName: 'my-agent' })
 // Pair (one-time)
 wallet.pair(pairingJson)
 
-// Simple ETH transfer
+// Simple ETH transfer: 0.001 ETH on Base Sepolia
 const txHash = await wallet.requestTx({
-  chain_id: 1,
+  chain_id: 84532,
   transaction: {
-    to: '0xRecipientAddress',
-    value: '1000000000000000000', // 1 ETH in wei
+    to: '0x000000000000000000000000000000000000dEaD',
+    value: '1000000000000000', // 0.001 ETH in wei (string or bigint)
     data: '0x',
   },
   context: {
-    reason: 'Send 1 ETH to recipient',
+    reason: 'Send 0.001 ETH on Base Sepolia',
     urgency: 'medium',
   },
-  timeout_ms: 120000,
+  timeout_ms: 600000,
 })
 console.log(`Approved: ${txHash}`)
 ```
 
+`requestTx` throws `InvalidTxError` (`field`, `reason`) before sending if `chain_id`, `to`, `value` or `data` is malformed.
+
+With a bitcoin or chia pairing, use `requestTransfer`; the family comes from the pairing:
+
+```typescript
+// 1000 mojos on chia testnet11; amount and fee are integer strings or bigints
+const txId = await wallet.requestTransfer({
+  chain_network: 'testnet11',
+  transfer: { asset: 'xch', to: 'txch1qqqsyqcyq5rqwzqfpg9scrgwpugpzysnzs23v9ccrydpk8qarc0sw0amhg', amount: '1000', fee: '0' },
+  context: { reason: 'Send 1000 mojos on chia testnet11' },
+})
+```
+
+`requestTransfer` throws `InvalidTxError` before sending for an evm pairing, an unknown network, a recipient from another network, a non-integer amount, or a bitcoin `fee` (bitcoin wallets set their own). Chia `fee` defaults to `"0"`.
+
 ## Python SDK
+
+Requires Python 3.10+.
 
 ```python
 from clanker_wallet import ClankerWallet, Transaction, RequestTxOptions, TxContext
@@ -102,10 +146,24 @@ agent = ClankerWallet()
 agent.pair(pairing_json)
 
 tx_hash = await agent.request_tx(RequestTxOptions(
-    chain_id=1,
-    transaction=Transaction(to="0x...", value="1000000000000000000", data="0x"),
-    context=TxContext(reason="Send 1 ETH", urgency="medium"),
-    timeout_ms=120000,
+    chain_id=84532,  # base sepolia
+    transaction=Transaction(to="0x000000000000000000000000000000000000dEaD", value="1000000000000000", data="0x"),
+    context=TxContext(reason="Send 0.001 ETH on Base Sepolia", urgency="medium"),
+    timeout_ms=600000,
+))
+```
+
+`request_tx` raises `InvalidTxError` (a `ValueError`; `field`, `reason`) before sending if the request is malformed.
+
+With a bitcoin or chia pairing, use `request_transfer`:
+
+```python
+from clanker_wallet import RequestTransferOptions, Transfer
+
+txid = await agent.request_transfer(RequestTransferOptions(
+    chain_network="testnet",  # bitcoin testnet
+    transfer=Transfer(asset="btc", to="tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx", amount=1000),
+    context=TxContext(reason="Send 1000 sats on bitcoin testnet"),
 ))
 ```
 
@@ -113,46 +171,42 @@ tx_hash = await agent.request_tx(RequestTxOptions(
 
 ### Simple ETH transfer
 ```bash
-clanker-wallet tx --chain 1 --to 0xRecipient --value 1000000000000000 --reason "Send 0.001 ETH"
+clanker-wallet tx --chain 84532 --to 0x000000000000000000000000000000000000dEaD --value 1000000000000000 --reason "Send 0.001 ETH"
 ```
 
 ### ERC-20 token transfer
+0.001 WETH on Base Sepolia (WETH is `0x4200000000000000000000000000000000000006`, 18 decimals). Calldata = selector + recipient left-padded to 32 bytes + amount (`1000000000000000` = `0x38d7ea4c68000`) as a 32-byte word.
 ```bash
 # transfer(address,uint256) selector: 0xa9059cbb
 clanker-wallet tx \
-  --chain 1 \
-  --to 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48 \
-  --data 0xa9059cbb000000000000000000000000RECIPIENT_PADDED0000000000000000000000000000000000000000000000000000000000AMOUNT_HEX \
-  --reason "Transfer USDC"
+  --chain 84532 \
+  --to 0x4200000000000000000000000000000000000006 \
+  --data 0xa9059cbb000000000000000000000000000000000000000000000000000000000000dead00000000000000000000000000000000000000000000000000038d7ea4c68000 \
+  --reason "Transfer 0.001 WETH to a test address"
 ```
 
 ### ERC-20 approval
 ```bash
 # approve(address,uint256) selector: 0x095ea7b3
 clanker-wallet tx \
-  --chain 1 \
-  --to 0xTokenContract \
-  --data 0x095ea7b3000000000000000000000000SPENDER_PADDED0000000000000000000000000000000000000000000000000000000000AMOUNT_HEX \
-  --reason "Approve token spending"
+  --chain 84532 \
+  --to 0x4200000000000000000000000000000000000006 \
+  --data 0x095ea7b3000000000000000000000000000000000000000000000000000000000000dead00000000000000000000000000000000000000000000000000038d7ea4c68000 \
+  --reason "Approve a test address to spend 0.001 WETH"
 ```
 
-### DEX swap (Uniswap V3)
-```bash
-# exactInputSingle selector: 0x04e45aaf
-clanker-wallet tx \
-  --chain 1 \
-  --to 0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45 \
-  --value 1000000000000000000 \
-  --data 0x04e45aaf...ENCODED_PARAMS... \
-  --reason "Swap 1 ETH for USDC via Uniswap V3"
-```
+### Encoding calldata
+Build calldata with a library, never by hand-editing hex, and never leave placeholder text in it:
+- foundry: `cast calldata "transfer(address,uint256)" 0x000000000000000000000000000000000000dEaD 1000000000000000`
+- viem: `encodeFunctionData({ abi: erc20Abi, functionName: 'transfer', args: [to, amount] })`
+- the same works for any contract call (e.g. a DEX swap): encode the function with its ABI and pass the result as `--data`.
 
 ## How It Works
 
 1. Human opens clanker-wallet.xyz, connects wallet, gets pairing JSON
 2. Agent runs `pair` — establishes E2E encrypted channel via NaCl box
-3. Agent runs `tx` — encrypts transaction request, sends via WebSocket relay
-4. Human sees tx details + simulation + risk flags in web app
+3. Agent runs `tx` (or `send` for bitcoin/chia) — encrypts the request, sends via WebSocket relay
+4. Human sees tx details + simulation + risk flags in web app. Auto-approve rules apply only after the human trusts the agent; trust applies on every chain family; each chain family has its own policy (rules and remote URL); value and daily limits are wei for evm and sats for bitcoin (the sent amount, not the wallet's fee), a send on another family never matches a rule that sets one, and chia has none. On bitcoin the wallet still confirms each auto-approved send
 5. Human approves → wallet signs + broadcasts → agent gets tx hash
 6. Human rejects → agent gets rejection with reason
 

@@ -1,6 +1,6 @@
 """Clanker Wallet Python SDK — E2E encrypted transaction approval for AI agents."""
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 from .client import ClankerWallet
 from .crypto import (
@@ -18,6 +18,7 @@ from .crypto import (
 )
 from .errors import (
     ClankerError,
+    InvalidTxError,
     NotPairedError,
     TxRejectedError,
     TxTimeoutError,
@@ -33,7 +34,11 @@ from .types import (
     AgentEnvelope,
     PairingData,
     RequestTxOptions,
+    Transfer,
+    TransferRequest,
+    RequestTransferOptions,
 )
+from .validate import is_checksum_address, validate_transfer, validate_tx
 
 __all__ = [
     "__version__",
@@ -47,6 +52,13 @@ __all__ = [
     "AgentEnvelope",
     "PairingData",
     "RequestTxOptions",
+    "Transfer",
+    "TransferRequest",
+    "RequestTransferOptions",
+    # validation
+    "validate_tx",
+    "validate_transfer",
+    "is_checksum_address",
     # crypto
     "generate_keypair",
     "keypair_from_secret",
@@ -61,6 +73,7 @@ __all__ = [
     "base64_to_bytes",
     # errors
     "ClankerError",
+    "InvalidTxError",
     "NotPairedError",
     "TxRejectedError",
     "TxTimeoutError",
