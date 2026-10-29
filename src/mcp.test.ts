@@ -408,13 +408,16 @@ describe('expiry', () => {
 
   it('a get_request waiting through expiry reports expired, even when its timer fires before the clock reaches expires_at', async () => {
     fakeTimersOnly()
+    const { call } = stubServer(400)
+    const { request_id } = await send(call)
+    // at least 1 ms has passed since expires_at was stamped, so a wait timer aimed at expires_at would be set shorter than the ttl and fire first
+    const now = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 1)
     try {
-      const { call } = stubServer(400)
-      const { request_id } = await send(call)
       const waiting = call('get_request', { request_id, wait_seconds: 5 })
       await vi.advanceTimersByTimeAsync(400)
       expect((await waiting).body).toEqual({ request_id, status: 'expired' })
     } finally {
+      now.mockRestore()
       vi.useRealTimers()
     }
   })
