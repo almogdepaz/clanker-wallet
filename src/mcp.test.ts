@@ -87,6 +87,11 @@ describe('mcp protocol', () => {
     expect(result.protocolVersion).toBe('2025-11-25')
   })
 
+  it('does not offer 2025-03-26, which requires receiving batches', async () => {
+    const { result } = await rpc('initialize', { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 't', version: '1' } })
+    expect(result.protocolVersion).toBe('2025-11-25')
+  })
+
   it('answers ping, ignores notifications, and refuses unknown methods with -32601', async () => {
     expect(await rpc('ping')).toMatchObject({ result: {} })
     expect(await mcp.handleLine(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }))).toBeNull()

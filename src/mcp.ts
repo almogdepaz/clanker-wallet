@@ -8,8 +8,8 @@ import { InvalidTxError, validateTransfer, validateTx } from './validate.js'
  * files; this module answers one line at a time and keeps each request's state in memory.
  */
 
-/** newest first; a client asking for another version gets the newest */
-export const SUPPORTED_PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05']
+/** newest first; a client asking for another version gets the newest. not 2025-03-26: it requires receiving batches, which we refuse */
+export const SUPPORTED_PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18', '2024-11-05']
 
 /** get_request waits at most this long per call; assistants time tool calls out after about a minute */
 export const MAX_WAIT_SECONDS = 50
