@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { randomBytes } from 'node:crypto'
 import { ClankerWallet } from './client.js'
 import { toHex } from './crypto.js'
@@ -26,8 +26,15 @@ async function human(respond?: Parameters<typeof joinAsHuman>[1]) {
 
 const approve = (req: any) => ({ request_id: req.request_id, status: 'approved', tx_hash: TX_HASH })
 
+interface ServerOptions {
+  requestTtlMs?: number
+  joinTimeoutMs?: number
+  /** sees each per-request wallet before the server uses it */
+  onWallet?: (wallet: ClankerWallet) => void
+}
+
 /** an mcp server for one agent identity, paired per family as given (the cli wires its own pairing files the same way) */
-function server(pairings: Partial<Record<string, SavedPairing>>, requestTtlMs?: number) {
+function server(pairings: Partial<Record<string, SavedPairing>>, { requestTtlMs, joinTimeoutMs, onWallet }: ServerOptions = {}) {
   const secretKey = new Uint8Array(randomBytes(32))
   const identity = new ClankerWallet({ secretKey })
   const mcp = createMcpServer({
@@ -37,9 +44,11 @@ function server(pairings: Partial<Record<string, SavedPairing>>, requestTtlMs?: 
     wallet: (pairing) => {
       const wallet = new ClankerWallet({ secretKey })
       wallet.pair(JSON.stringify({ version: 1, ...pairing }))
+      onWallet?.(wallet)
       return wallet
     },
     requestTtlMs,
+    joinTimeoutMs,
   })
   let nextId = 1
   const rpc = async (method: string, params?: unknown) => {
@@ -61,6 +70,7 @@ const btcPairing = (room: string, extra: Partial<SavedPairing> = {}): SavedPairi
   ({ pubkey: room, relay: relay.url, wallet: 'tb1me', mode: null, chain_family: 'bitcoin', ...extra })
 
 const evmArgs = { chain_id: 84532, to: TO, value: '1000', reason: 'pay the test address', urgency: 'low' }
+const btcArgs = { family: 'bitcoin', network: 'testnet', to: BTC_TEST, amount: '1000', reason: 'pay', expected_outcome: 'paid' }
 const sentTo = (room: string) => relay.received.filter((m) => m.type === 'message' && m.room === room)
 
 describe('mcp protocol', () => {
@@ -159,7 +169,7 @@ describe('request_evm_tx + get_request', () => {
 
   it('reports pending without waiting, and expired once the request outlives its ttl', async () => {
     const h = await human()
-    const { call } = server({ evm: evmPairing(h.room) }, 400)
+    const { call } = server({ evm: evmPairing(h.room) }, { requestTtlMs: 400 })
     const { request_id } = (await call('request_evm_tx', evmArgs)).body
     expect((await call('get_request', { request_id })).body).toMatchObject({ request_id, status: 'pending', expires_at: expect.any(String) })
     expect((await call('get_request', { request_id, wait_seconds: 5 })).body).toEqual({ request_id, status: 'expired' })
@@ -168,7 +178,7 @@ describe('request_evm_tx + get_request', () => {
 
   it('reports expired, not failed, when the wallet times the request out before anyone asks', async () => {
     const h = await human()
-    const { call } = server({ evm: evmPairing(h.room) }, 200)
+    const { call } = server({ evm: evmPairing(h.room) }, { requestTtlMs: 200 })
     const { request_id } = (await call('request_evm_tx', evmArgs)).body
     await new Promise((r) => setTimeout(r, 600))
     expect((await call('get_request', { request_id })).body).toEqual({ request_id, status: 'expired' })
@@ -223,8 +233,6 @@ describe('request_evm_tx + get_request', () => {
 })
 
 describe('request_transfer', () => {
-  const btcArgs = { family: 'bitcoin', network: 'testnet', to: BTC_TEST, amount: '1000', reason: 'pay', expected_outcome: 'paid' }
-
   it('sends the same signed transfer as send --btc and reports approved', async () => {
     const h = await human(approve)
     const { call } = server({ bitcoin: btcPairing(h.room) })
@@ -313,5 +321,83 @@ describe('list_pairings', () => {
   it('lists none when nothing is paired', async () => {
     const { call } = server({})
     expect((await call('list_pairings')).body.pairings).toEqual([])
+  })
+})
+
+describe('join timeout and cancellation', () => {
+  let stalled: TestRelay
+  let late: TestRelay
+  beforeAll(async () => {
+    stalled = await startTestRelay({ joinDelayMs: Infinity })
+    late = await startTestRelay({ joinDelayMs: 600 })
+  })
+  afterAll(async () => {
+    await stalled.close()
+    await late.close()
+  })
+  const room = () => toHex(randomBytes(32))
+  const sentOn = (r: TestRelay) => r.received.filter((m) => m.type === 'message')
+  const line = (id: number, method: string, params: unknown) => JSON.stringify({ jsonrpc: '2.0', id, method, params })
+  const cancel = (requestId: number) => JSON.stringify({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId, reason: 'timed out' } })
+
+  it('passes the wallet a join timeout under the hosts\' 60 s tool-call timeout', async () => {
+    const h = await human(approve)
+    let options: any
+    const { call } = server({ evm: evmPairing(h.room) }, {
+      onWallet: (wallet) => {
+        const requestTx = wallet.requestTx.bind(wallet)
+        vi.spyOn(wallet, 'requestTx').mockImplementation((o) => { options = o; return requestTx(o) })
+      },
+    })
+    expect((await call('request_evm_tx', evmArgs)).isError).toBe(false)
+    expect(options.join_timeout_ms).toBeGreaterThan(0)
+    expect(options.join_timeout_ms).toBeLessThanOrEqual(30_000)
+  })
+
+  it('reports a relay that never answers join as a tool error once the join timeout passes, with nothing sent', async () => {
+    const { call } = server({ evm: evmPairing(room(), { relay: stalled.url }) }, { joinTimeoutMs: 300 })
+    const started = Date.now()
+    const res = await call('request_evm_tx', evmArgs)
+    expect(res.isError).toBe(true)
+    expect(res.text).toMatch(/did not answer join.*not sent/)
+    expect(Date.now() - started).toBeLessThan(2000)
+    expect(sentOn(stalled)).toEqual([])
+  })
+
+  it('applies the join timeout to request_transfer too', async () => {
+    const { call } = server({ bitcoin: btcPairing(room(), { relay: stalled.url }) }, { joinTimeoutMs: 300 })
+    const res = await call('request_transfer', btcArgs)
+    expect(res.isError).toBe(true)
+    expect(res.text).toMatch(/did not answer join/)
+  })
+
+  it('a cancelled request tool call that has not sent yet sends nothing and gets no reply', async () => {
+    const before = sentOn(late).length
+    const { mcp } = server({ evm: evmPairing(room(), { relay: late.url }) })
+    const pending = mcp.handleLine(line(7, 'tools/call', { name: 'request_evm_tx', arguments: evmArgs }))
+    await new Promise((r) => setTimeout(r, 100))
+    expect(await mcp.handleLine(cancel(7))).toBeNull()
+    expect(await pending).toBeNull()
+    await new Promise((r) => setTimeout(r, 800))
+    expect(sentOn(late).length).toBe(before)
+  })
+
+  it('a cancelled get_request stops waiting and gets no reply', async () => {
+    const h = await human()
+    const { mcp, call } = server({ evm: evmPairing(h.room) })
+    const { request_id } = (await call('request_evm_tx', evmArgs)).body
+    const started = Date.now()
+    const waiting = mcp.handleLine(line(8, 'tools/call', { name: 'get_request', arguments: { request_id, wait_seconds: 20 } }))
+    await new Promise((r) => setTimeout(r, 100))
+    await mcp.handleLine(cancel(8))
+    expect(await waiting).toBeNull()
+    expect(Date.now() - started).toBeLessThan(2000)
+    expect((await call('get_request', { request_id })).body.status).toBe('pending')
+  })
+
+  it('ignores a cancel for an id that is not in flight', async () => {
+    const { mcp, rpc } = server({})
+    expect(await mcp.handleLine(cancel(999))).toBeNull()
+    expect(await rpc('ping')).toMatchObject({ result: {} })
   })
 })

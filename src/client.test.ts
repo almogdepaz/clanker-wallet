@@ -3,7 +3,7 @@ import nacl from 'tweetnacl'
 import { ClankerWallet } from './client.js'
 import { encryptMessage, decryptMessage, toHex, fromHex } from './crypto.js'
 import type { AgentEnvelope, TxRequest, TxResponse } from './types.js'
-import { startTestRelay, type TestRelay } from './testRelay.js'
+import { joinAsHuman, startTestRelay, type TestRelay } from './testRelay.js'
 import { InvalidTxError } from './validate.js'
 
 const RECIPIENT = '0x1111111111111111111111111111111111111111'
@@ -504,5 +504,85 @@ describe('ClankerWallet SDK', () => {
     expect(fromAgent[0].simulate).toBeUndefined()
 
     humanWs.close()
+  })
+})
+
+describe('join timeout and abort', () => {
+  const BTC_TEST = 'tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx'
+  const tx = { chain_id: 1, transaction: { to: RECIPIENT, value: '0', data: '0x' } }
+  let stalled: TestRelay
+  let late: TestRelay
+
+  beforeAll(async () => {
+    stalled = await startTestRelay({ joinDelayMs: Infinity })
+    late = await startTestRelay({ joinDelayMs: 600 })
+  })
+  afterAll(async () => {
+    await stalled.close()
+    await late.close()
+  })
+
+  const agentOn = (url: string, extra: Record<string, unknown> = {}) => {
+    const agent = new ClankerWallet()
+    agent.pair(JSON.stringify({ version: 1, pubkey: toHex(nacl.box.keyPair().publicKey), relay: url, wallet: RECIPIENT, ...extra }))
+    return agent
+  }
+  const sentOn = (r: TestRelay) => r.received.filter((m) => m.type === 'message')
+
+  test('requestTx() fails after join_timeout_ms when the relay never answers join, well before timeout_ms', async () => {
+    const started = Date.now()
+    await expect(agentOn(stalled.url).requestTx({ ...tx, timeout_ms: 10000, join_timeout_ms: 300 })).rejects.toThrow(/did not answer join within 300ms.*not sent/)
+    expect(Date.now() - started).toBeLessThan(2000)
+  })
+
+  test('requestTransfer() takes join_timeout_ms too', async () => {
+    const agent = agentOn(stalled.url, { chain_family: 'bitcoin', chain_network: 'testnet' })
+    await expect(agent.requestTransfer({ chain_network: 'testnet', transfer: { asset: 'btc', to: BTC_TEST, amount: '1000' }, timeout_ms: 10000, join_timeout_ms: 300 }))
+      .rejects.toThrow(/did not answer join within 300ms/)
+  })
+
+  test('a joined that arrives after the join timeout sends nothing', async () => {
+    const before = sentOn(late).length
+    const sent = vi.fn()
+    const agent = agentOn(late.url)
+    agent.on('request_sent', sent)
+    await expect(agent.requestTx({ ...tx, timeout_ms: 10000, join_timeout_ms: 200 })).rejects.toThrow(/did not answer join/)
+    await sleep(800)
+    expect(sent).not.toHaveBeenCalled()
+    expect(sentOn(late).length).toBe(before)
+  })
+
+  test('the join timeout stops counting once joined: a human slower than it still answers', async () => {
+    const human = await joinAsHuman(late.url, async (req) => {
+      await sleep(500)
+      return { request_id: req.request_id, status: 'approved', tx_hash: '0xslow' }
+    })
+    const agent = new ClankerWallet()
+    agent.pair(JSON.stringify({ version: 1, pubkey: human.room, relay: late.url, wallet: RECIPIENT }))
+    // joined comes at 600 ms, the answer 500 ms after that: both inside the 1000 ms join timeout only if it were still running
+    await expect(agent.requestTx({ ...tx, timeout_ms: 10000, join_timeout_ms: 1000 })).resolves.toBe('0xslow')
+    human.close()
+  })
+
+  test('without join_timeout_ms only timeout_ms applies', async () => {
+    await expect(agentOn(stalled.url).requestTx({ ...tx, timeout_ms: 400 })).rejects.toThrow('timed out after 400ms')
+  })
+
+  test('an abort before joined fails the request and sends nothing, even when joined arrives later', async () => {
+    const before = sentOn(late).length
+    const controller = new AbortController()
+    const request = agentOn(late.url).requestTx({ ...tx, timeout_ms: 10000, signal: controller.signal })
+    setTimeout(() => controller.abort(), 100)
+    await expect(request).rejects.toThrow(/cancelled/)
+    await sleep(800)
+    expect(sentOn(late).length).toBe(before)
+  })
+
+  test('an already aborted signal fails before connecting', async () => {
+    const agent = agentOn(stalled.url)
+    const connecting = vi.fn()
+    agent.on('connecting', connecting)
+    await expect(agent.requestTx({ ...tx, signal: AbortSignal.abort() })).rejects.toThrow(/cancelled/)
+    expect(connecting).not.toHaveBeenCalled()
   })
 })

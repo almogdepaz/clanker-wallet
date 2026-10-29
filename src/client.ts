@@ -133,7 +133,7 @@ export class ClankerWallet extends TypedEmitter {
       ? { from: humanWallet || '', to: transaction.to, value: transaction.value, data: transaction.data, chainId: chain_id }
       : undefined
 
-    return this.send(txRequest, options.timeout_ms ?? DEFAULT_TIMEOUT_MS, simulate)
+    return this.send(txRequest, options, simulate)
   }
 
   /**
@@ -168,22 +168,35 @@ export class ClankerWallet extends TypedEmitter {
     request.signature = signMessage(JSON.stringify(request), this.signingSecretKey)
 
     // the relay simulator is evm-only: no simulate object for transfers, even on a managed pairing
-    return this.send(request, options.timeout_ms ?? DEFAULT_TIMEOUT_MS)
+    return this.send(request, options)
   }
 
   /** encrypt a signed request to the paired human, send it through the relay, and wait for the answer */
-  private send(request: TxRequest | TransferRequest, timeoutMs: number, simulate?: Record<string, unknown>): Promise<string> {
+  private send(
+    request: TxRequest | TransferRequest,
+    options: Pick<RequestTxOptions, 'timeout_ms' | 'join_timeout_ms' | 'signal'>,
+    simulate?: Record<string, unknown>,
+  ): Promise<string> {
     const { humanPubkey, humanPubkeyHex, relayUrl } = this.pairing!
     const requestId = request.request_id
+    const timeoutMs = options.timeout_ms ?? DEFAULT_TIMEOUT_MS
+    const { join_timeout_ms: joinTimeoutMs, signal } = options
 
     return new Promise<string>((resolve, reject) => {
       let ws: WebSocket
       let timer: ReturnType<typeof setTimeout>
+      let joinTimer: ReturnType<typeof setTimeout> | undefined
       let settled = false
+
+      const onAbort = (): void => {
+        if (!settled) fail(`request ${requestId} cancelled`)
+      }
 
       const cleanup = (): void => {
         settled = true
         clearTimeout(timer)
+        clearTimeout(joinTimer)
+        signal?.removeEventListener('abort', onAbort)
         if (ws && ws.readyState <= WebSocket.OPEN) {
           ws.close()
         }
@@ -195,6 +208,12 @@ export class ClankerWallet extends TypedEmitter {
         reject(new Error(message))
       }
 
+      if (signal?.aborted) {
+        onAbort()
+        return
+      }
+      signal?.addEventListener('abort', onAbort)
+
       timer = setTimeout(() => {
         if (!settled) {
           fail(`request ${requestId} timed out after ${timeoutMs}ms`)
@@ -202,6 +221,13 @@ export class ClankerWallet extends TypedEmitter {
       }, timeoutMs)
 
       this.emit('connecting', { relay: relayUrl })
+
+      // the request goes out only once joined, so failing before then guarantees nothing was sent
+      if (joinTimeoutMs !== undefined) {
+        joinTimer = setTimeout(() => {
+          if (!settled) fail(`relay ${relayUrl} did not answer join within ${joinTimeoutMs}ms; request ${requestId} was not sent`)
+        }, joinTimeoutMs)
+      }
 
       try {
         ws = new WebSocket(relayUrl)
@@ -238,6 +264,7 @@ export class ClankerWallet extends TypedEmitter {
         }
 
         if (msg.type === 'joined') {
+          clearTimeout(joinTimer)
           this.emit('connected', { room: humanPubkeyHex })
 
           const ciphertext = encryptMessage(JSON.stringify(request), humanPubkey, this.secretKey)

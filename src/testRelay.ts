@@ -60,7 +60,12 @@ function decodeFrames(buf: Buffer): [{ opcode: number; data: Buffer }[], Buffer]
   return [frames, buf.subarray(off)]
 }
 
-export async function startTestRelay(): Promise<TestRelay> {
+export interface TestRelayOptions {
+  /** delay `joined` by this long; Infinity never answers join (a relay or proxy that accepts the socket and stalls) */
+  joinDelayMs?: number
+}
+
+export async function startTestRelay(options: TestRelayOptions = {}): Promise<TestRelay> {
   const rooms = new Map<string, Set<Socket>>()
   const sockets = new Set<Socket>()
   const received: any[] = []
@@ -96,11 +101,17 @@ export async function startTestRelay(): Promise<TestRelay> {
         try { msg = JSON.parse(data.toString()) } catch { continue }
         received.push(msg)
         if (msg.type === 'join' && typeof msg.room === 'string') {
-          if (room) rooms.get(room)?.delete(socket)
-          room = msg.room
-          if (!rooms.has(msg.room)) rooms.set(msg.room, new Set())
-          rooms.get(msg.room)!.add(socket)
-          socket.write(encodeTextFrame(JSON.stringify({ type: 'joined', room: msg.room })))
+          const join = () => {
+            if (socket.destroyed) return
+            if (room) rooms.get(room)?.delete(socket)
+            room = msg.room
+            if (!rooms.has(msg.room)) rooms.set(msg.room, new Set())
+            rooms.get(msg.room)!.add(socket)
+            socket.write(encodeTextFrame(JSON.stringify({ type: 'joined', room: msg.room })))
+          }
+          const delay = options.joinDelayMs ?? 0
+          if (delay === 0) join()
+          else if (Number.isFinite(delay)) setTimeout(join, delay)
         } else if (msg.type === 'message' && room && msg.room === room) {
           const out = encodeTextFrame(JSON.stringify({ type: 'message', room, payload: msg.payload }))
           for (const peer of rooms.get(room) ?? []) {

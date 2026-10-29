@@ -17,6 +17,9 @@ export const MAX_WAIT_SECONDS = 50
 /** the relay buffers room messages for 1 h, so a later answer can't reach this process */
 const DEFAULT_REQUEST_TTL_MS = 3_600_000
 
+/** a relay that hasn't confirmed the join by then fails the request with nothing sent, inside the hosts' 60 s tool-call timeout */
+const DEFAULT_JOIN_TIMEOUT_MS = 20_000
+
 /** a pairing as the cli saves it in ~/.clanker-wallet/pairings/<family>.json */
 export interface SavedPairing {
   pubkey: string
@@ -41,6 +44,8 @@ export interface McpServerOptions {
   wallet: (pairing: SavedPairing) => ClankerWallet
   /** how long a request waits for the human (default 1 h, the relay's buffer) */
   requestTtlMs?: number
+  /** how long a request waits for the relay to confirm the join before failing unsent (default 20 s) */
+  joinTimeoutMs?: number
 }
 
 const URGENCIES = ['low', 'medium', 'high']
@@ -145,6 +150,8 @@ class ToolInputError extends Error {}
 
 type ToolResult = { content: { type: 'text'; text: string }[]; isError?: true }
 
+type WalletLimits = { timeout_ms: number; join_timeout_ms: number; signal: AbortSignal }
+
 const toolResult = (body: unknown): ToolResult => ({ content: [{ type: 'text', text: JSON.stringify(body) }] })
 const toolError = (message: string): ToolResult => ({ content: [{ type: 'text', text: message }], isError: true })
 
@@ -173,22 +180,28 @@ const NOT_PAIRED: Record<RequestFamily, string> = {
 
 export function createMcpServer(options: McpServerOptions): { handleLine: (line: string) => Promise<string | null> } {
   const ttl = options.requestTtlMs ?? DEFAULT_REQUEST_TTL_MS
+  const joinTimeout = options.joinTimeoutMs ?? DEFAULT_JOIN_TIMEOUT_MS
   const records = new Map<string, RequestRecord>()
+  /** tools/call requests still being answered, by JSON-RPC id, for notifications/cancelled */
+  const inFlight = new Map<unknown, AbortController>()
 
   /**
    * start a request on the family's pairing and answer once the relay has it: { request_id } after
-   * the wallet sends it, or a tool error when it fails first (bad input, unreachable relay)
+   * the wallet sends it, or a tool error when it fails first (bad input, unreachable relay, join timeout, cancelled)
    */
-  function submit(family: RequestFamily, send: (wallet: ClankerWallet, timeoutMs: number) => Promise<string>): Promise<ToolResult> {
+  function submit(family: RequestFamily, cancelled: AbortSignal, send: (wallet: ClankerWallet, limits: WalletLimits) => Promise<string>): Promise<ToolResult> {
     const pairing = options.loadPairing(family)
     if (!pairing) return Promise.resolve(toolError(NOT_PAIRED[family]))
     const wallet = options.wallet(pairing)
     // stamped before the wallet starts its own timer, so its timeout never lands before expiresAt
     const expiresAt = Date.now() + ttl
+    // a cancel stops the wallet only before it sends: once delivered, the human can still approve, so keep waiting
+    const unsent = new AbortController()
 
     return new Promise((resolve) => {
       let record: RequestRecord | undefined
       let answered: { status: string } | undefined
+      cancelled.addEventListener('abort', () => { if (!record) unsent.abort() })
       wallet.on('request_sent', ({ request_id }) => {
         record = newRecord(request_id, expiresAt)
         records.set(request_id, record)
@@ -196,7 +209,7 @@ export function createMcpServer(options: McpServerOptions): { handleLine: (line:
       })
       wallet.on('response', (response) => { answered = response })
 
-      send(wallet, ttl).then(
+      send(wallet, { timeout_ms: ttl, join_timeout_ms: joinTimeout, signal: unsent.signal }).then(
         (txHash) => record!.settle('approved', { tx_hash: txHash }),
         (err: unknown) => {
           const message = err instanceof Error ? err.message : String(err)
@@ -209,13 +222,13 @@ export function createMcpServer(options: McpServerOptions): { handleLine: (line:
     })
   }
 
-  async function requestEvmTx(args: Record<string, unknown>): Promise<ToolResult> {
+  async function requestEvmTx(args: Record<string, unknown>, cancelled: AbortSignal): Promise<ToolResult> {
     const context = contextFrom(args)
     const { chain_id, transaction } = validateTx(args.chain_id, { to: args.to, value: args.value, data: args.data ?? '0x' })
-    return submit('evm', (wallet, timeoutMs) => wallet.requestTx({ chain_id, transaction, context, timeout_ms: timeoutMs }))
+    return submit('evm', cancelled, (wallet, limits) => wallet.requestTx({ chain_id, transaction, context, ...limits }))
   }
 
-  async function requestTransfer(args: Record<string, unknown>): Promise<ToolResult> {
+  async function requestTransfer(args: Record<string, unknown>, cancelled: AbortSignal): Promise<ToolResult> {
     if (args.family !== 'bitcoin') throw new ToolInputError(`invalid family: must be "bitcoin", got ${JSON.stringify(args.family)}`)
     const context = contextFrom(args)
     let request: ReturnType<typeof validateTransfer>
@@ -227,9 +240,9 @@ export function createMcpServer(options: McpServerOptions): { handleLine: (line:
       throw err
     }
     const { chain_network, transfer } = request
-    return submit('bitcoin', async (wallet, timeoutMs) => {
+    return submit('bitcoin', cancelled, async (wallet, limits) => {
       try {
-        return await wallet.requestTransfer({ chain_network, transfer, context, timeout_ms: timeoutMs })
+        return await wallet.requestTransfer({ chain_network, transfer, context, ...limits })
       } catch (err) {
         // the pairing is for another network
         if (err instanceof InvalidTxError && err.field === 'chain_network') throw new Error(`invalid network: ${err.reason}`)
@@ -238,7 +251,7 @@ export function createMcpServer(options: McpServerOptions): { handleLine: (line:
     })
   }
 
-  async function getRequest(args: Record<string, unknown>): Promise<ToolResult> {
+  async function getRequest(args: Record<string, unknown>, cancelled: AbortSignal): Promise<ToolResult> {
     const { request_id, wait_seconds = 0 } = args
     if (typeof request_id !== 'string') throw new ToolInputError('invalid request_id: must be the string request_evm_tx or request_transfer returned')
     if (typeof wait_seconds !== 'number' || !(wait_seconds >= 0)) {
@@ -253,7 +266,11 @@ export function createMcpServer(options: McpServerOptions): { handleLine: (line:
     const waitMs = Math.min(wait_seconds, MAX_WAIT_SECONDS) * 1000
     if (record.status === 'pending' && waitMs > 0) {
       let timer: ReturnType<typeof setTimeout> | undefined
-      await Promise.race([record.settled, new Promise((r) => { timer = setTimeout(r, Math.min(waitMs, record.expiresAt - Date.now())) })])
+      await Promise.race([
+        record.settled,
+        new Promise((r) => { timer = setTimeout(r, Math.min(waitMs, record.expiresAt - Date.now())) }),
+        new Promise((r) => cancelled.addEventListener('abort', r, { once: true })),
+      ])
       clearTimeout(timer)
     }
     if (record.status === 'pending' && Date.now() >= record.expiresAt) record.settle('expired')
@@ -271,21 +288,21 @@ export function createMcpServer(options: McpServerOptions): { handleLine: (line:
     return toolResult({ ...options.identity, pairings })
   }
 
-  const TOOL_HANDLERS: Record<string, (args: Record<string, unknown>) => ToolResult | Promise<ToolResult>> = {
+  const TOOL_HANDLERS: Record<string, (args: Record<string, unknown>, cancelled: AbortSignal) => ToolResult | Promise<ToolResult>> = {
     request_evm_tx: requestEvmTx,
     request_transfer: requestTransfer,
     get_request: getRequest,
     list_pairings: listPairings,
   }
 
-  async function callTool(params: unknown): Promise<ToolResult> {
+  async function callTool(params: unknown, cancelled: AbortSignal): Promise<ToolResult> {
     if (!isObject(params) || typeof params.name !== 'string') throw new RpcError(INVALID_PARAMS, 'tools/call needs a tool name')
     const handler = TOOL_HANDLERS[params.name]
     if (!handler) throw new RpcError(INVALID_PARAMS, `unknown tool: ${params.name}`)
     const args = params.arguments ?? {}
     if (!isObject(args)) throw new RpcError(INVALID_PARAMS, 'tool arguments must be an object')
     try {
-      return await handler(args)
+      return await handler(args, cancelled)
     } catch (err) {
       if (err instanceof ToolInputError || err instanceof InvalidTxError) return toolError(err.message)
       throw err
@@ -303,12 +320,12 @@ export function createMcpServer(options: McpServerOptions): { handleLine: (line:
     }
   }
 
-  async function dispatch(method: string, params: unknown): Promise<unknown> {
+  async function dispatch(method: string, params: unknown, cancelled: AbortSignal): Promise<unknown> {
     switch (method) {
       case 'initialize': return initialize(params)
       case 'ping': return {}
       case 'tools/list': return { tools: MCP_TOOLS }
-      case 'tools/call': return callTool(params)
+      case 'tools/call': return callTool(params, cancelled)
       default: throw new RpcError(METHOD_NOT_FOUND, `method not found: ${method}`)
     }
   }
@@ -334,15 +351,25 @@ export function createMcpServer(options: McpServerOptions): { handleLine: (line:
       return reply(id, { error: { code: INVALID_REQUEST, message: 'invalid request: no method' } })
     }
     if (msg.jsonrpc !== '2.0') return reply(id, { error: { code: INVALID_REQUEST, message: 'invalid request: jsonrpc must be "2.0"' } })
-    // notifications (initialized, cancelled, ...) need no answer and change nothing here
-    if (!hasId) return null
-
-    try {
-      return reply(id, { result: await dispatch(msg.method, msg.params) })
-    } catch (err) {
-      if (err instanceof RpcError) return reply(id, { error: { code: err.code, message: err.message } })
-      return reply(id, { error: { code: INTERNAL_ERROR, message: err instanceof Error ? err.message : String(err) } })
+    // notifications need no answer; only cancelled changes anything here
+    if (!hasId) {
+      if (msg.method === 'notifications/cancelled' && isObject(msg.params)) inFlight.get(msg.params.requestId)?.abort()
+      return null
     }
+
+    const controller = new AbortController()
+    inFlight.set(id, controller)
+    let answer: string
+    try {
+      answer = reply(id, { result: await dispatch(msg.method, msg.params, controller.signal) })
+    } catch (err) {
+      if (err instanceof RpcError) answer = reply(id, { error: { code: err.code, message: err.message } })
+      else answer = reply(id, { error: { code: INTERNAL_ERROR, message: err instanceof Error ? err.message : String(err) } })
+    } finally {
+      if (inFlight.get(id) === controller) inFlight.delete(id)
+    }
+    // the client gave up on this call: it expects no response
+    return controller.signal.aborted ? null : answer
   }
 
   return { handleLine }
