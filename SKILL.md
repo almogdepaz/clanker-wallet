@@ -217,10 +217,10 @@ Claude Desktop (`claude_desktop_config.json`), Cursor (`~/.cursor/mcp.json`), an
 |------|-----------|---------|
 | `request_evm_tx` | `chain_id`, `to`, `value` (wei, integer string), `data` (default `0x`), `reason`, optional `urgency` / `expected_outcome` | `{"request_id":"req_...","status":"pending","expires_at":"..."}` |
 | `request_transfer` | `family` (`bitcoin`), `network` (`mainnet`, `testnet`, `signet`), `to`, `amount` (sats, integer string), `reason`, optional `urgency` / `expected_outcome` | as above |
-| `get_request` | `request_id`, optional `wait_seconds` (at most 50) | `status`: `pending`, `approved` (with `tx_hash`), `rejected`, `failed` (with `error`) or `expired` |
+| `get_request` | `request_id`, optional `wait_seconds` (at most 50) | `status`: `pending`, `approved` (with `tx_hash`), `rejected`, `failed` (with `error`), `unknown` (with `error`) or `expired` |
 | `list_pairings` | none | `agent_id`, `fingerprint`, and the paired families (`evm`, `bitcoin`) with network, wallet and mode |
 
-Flow: call `list_pairings` to see which chains you can use, call `request_evm_tx` or `request_transfer` (same rules as `tx` / `send`: wei and sats as integer strings, real addresses), tell the human a request is waiting (see "Transaction notifications"), then call `get_request` with `wait_seconds` until the status is no longer `pending`. Invalid input or a missing pairing comes back as a tool error and nothing is sent. Each request expires after 1 h, and a restarted server no longer knows its earlier requests. Chia is not offered over MCP yet.
+Flow: call `list_pairings` to see which chains you can use, call `request_evm_tx` or `request_transfer` (same rules as `tx` / `send`: wei and sats as integer strings, real addresses), tell the human a request is waiting (see "Transaction notifications"), then call `get_request` with `wait_seconds` until the status is no longer `pending`. Invalid input or a missing pairing comes back as a tool error and nothing is sent. Each request expires after 1 h, and a restarted server no longer knows its earlier requests. `unknown` means the request was delivered but the server lost its relay connection: the human may still approve it, so ask them before sending it again. Chia is not offered over MCP yet.
 
 ## Troubleshooting
 

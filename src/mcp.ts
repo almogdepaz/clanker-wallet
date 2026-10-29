@@ -95,8 +95,9 @@ export const MCP_TOOLS = [
   },
   {
     name: 'get_request',
-    description: 'Get the outcome of a request: pending, approved (with tx_hash), rejected, failed (with error) or expired. ' +
+    description: 'Get the outcome of a request: pending, approved (with tx_hash), rejected, failed (with error), unknown (with error) or expired. ' +
       `The human may take minutes to answer: pass wait_seconds (at most ${MAX_WAIT_SECONDS}) to wait for it, and call again while it is pending. ` +
+      'unknown means the request was delivered but this server lost its relay connection: the human may still approve it, so ask them before sending it again. ' +
       'A request expires 1 hour after it is sent, or when this server restarts.',
     inputSchema: {
       type: 'object',
@@ -119,7 +120,9 @@ const INSTRUCTIONS = 'clanker-wallet sends transaction requests to a human, who 
   'you never hold keys. Call list_pairings to see which chains you can use, request_evm_tx or request_transfer to ask, ' +
   'and get_request (with wait_seconds) until the request is no longer pending.'
 
-type RequestStatus = 'pending' | 'approved' | 'rejected' | 'failed' | 'expired'
+type RequestStatus = 'pending' | 'approved' | 'rejected' | 'failed' | 'unknown' | 'expired'
+
+const STILL_APPROVABLE = 'the request was delivered, so the human may still approve it in their wallet: ask them before sending it again'
 
 interface RequestRecord {
   request_id: string
@@ -215,7 +218,9 @@ export function createMcpServer(options: McpServerOptions): { handleLine: (line:
           const message = err instanceof Error ? err.message : String(err)
           if (!record) return resolve(toolError(message))
           if (answered?.status === 'rejected') record.settle('rejected')
-          else if (answered || Date.now() < expiresAt) record.settle('failed', { error: message })
+          else if (answered) record.settle('failed', { error: message })
+          // delivered, then the relay connection dropped: the relay still holds the request for the human
+          else if (Date.now() < expiresAt) record.settle('unknown', { error: `${message}; ${STILL_APPROVABLE}` })
           else record.settle('expired')
         },
       )

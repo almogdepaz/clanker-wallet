@@ -184,6 +184,20 @@ describe('request_evm_tx + get_request', () => {
     expect((await call('get_request', { request_id })).body).toEqual({ request_id, status: 'expired' })
   })
 
+  it('reports unknown, not failed, when the relay connection drops after delivery: the human may still approve', async () => {
+    const own = await startTestRelay()
+    const h = await joinAsHuman(own.url)
+    const { call } = server({ evm: evmPairing(h.room, { relay: own.url }) })
+    const { request_id } = (await call('request_evm_tx', evmArgs)).body
+    await own.close()
+    const { body } = await call('get_request', { request_id, wait_seconds: 5 })
+    expect(body.status).toBe('unknown')
+    expect(body.error).toMatch(/connection closed/)
+    expect(body.error).toMatch(/may still approve/)
+    expect(body.error).toMatch(/ask .* before sending it again/)
+    h.close()
+  })
+
   it('returns from wait_seconds as soon as the human answers', async () => {
     const h = await human(async (req) => {
       await new Promise((r) => setTimeout(r, 300))
