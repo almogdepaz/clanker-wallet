@@ -168,6 +168,13 @@ describe('documented mcp server', () => {
     expect(statuses).toEqual([...REQUEST_STATUSES])
   })
 
+  it.each(MCP_DOCS)('%s says an expired or forgotten request may still be approved', (doc) => {
+    const text = read(doc)
+    expect(text).toMatch(/stops waiting and reports `expired`/)
+    expect(text).toMatch(/the human may still approve the request in their wallet, so ask them before sending it again/)
+    expect(text).not.toMatch(/expires after 1 h/)
+  })
+
   it.each(MCP_DOCS)('%s names the Claude Desktop and Cursor config files', (doc) => {
     const text = read(doc)
     expect(text).toContain('Claude Desktop (`claude_desktop_config.json`)')

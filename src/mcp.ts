@@ -98,7 +98,8 @@ export const MCP_TOOLS = [
     description: 'Get the outcome of a request: pending, approved (with tx_hash), rejected, failed (with error), unknown (with error) or expired. ' +
       `The human may take minutes to answer: pass wait_seconds (at most ${MAX_WAIT_SECONDS}) to wait for it, and call again while it is pending. ` +
       'unknown means the request was delivered but this server lost its relay connection: the human may still approve it, so ask them before sending it again. ' +
-      'A request expires 1 hour after it is sent, or when this server restarts.',
+      'expired means this server stopped waiting, 1 hour after sending; after a restart it no longer knows earlier request ids. ' +
+      'In both cases the human may still approve it in their wallet, so ask them before sending it again.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -266,8 +267,8 @@ export function createMcpServer(options: McpServerOptions): { handleLine: (line:
     }
     const record = records.get(request_id)
     if (!record) {
-      throw new ToolInputError(`unknown request_id ${JSON.stringify(request_id)}: this server did not send it. ` +
-        'a request from before the server restarted can no longer be tracked; treat it as expired and ask the human whether it went through')
+      throw new ToolInputError(`unknown request_id ${JSON.stringify(request_id)}: this server did not send it, or sent it before it restarted and stopped waiting. ` +
+        'if it was sent before a restart, the human may still approve it in their wallet: ask them before sending it again')
     }
 
     const waitMs = Math.min(wait_seconds, MAX_WAIT_SECONDS) * 1000

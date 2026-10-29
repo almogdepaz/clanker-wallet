@@ -299,6 +299,16 @@ describe('get_request', () => {
     const res = await call('get_request', { request_id: 'req_1_abcdef' })
     expect(res.isError).toBe(true)
     expect(res.text).toMatch(/unknown request_id/)
+    // it may be from before a restart, and still approvable
+    expect(res.text).toMatch(/restart/)
+    expect(res.text).toMatch(/may still approve it in their wallet: ask them before sending it again/)
+  })
+
+  it('describes expired as the server no longer waiting, not the request being dead', () => {
+    const { description } = MCP_TOOLS.find((t) => t.name === 'get_request')!
+    expect(description).toMatch(/expired means this server stopped waiting/)
+    expect(description).toMatch(/may still approve it in their wallet, so ask them before sending it again/)
+    expect(description).not.toMatch(/request expires/i)
   })
 
   it.each([[-1], ['5'], [Number.NaN]])('refuses wait_seconds %s', async (wait) => {

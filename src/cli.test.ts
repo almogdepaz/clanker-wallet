@@ -9,6 +9,7 @@ import nacl from 'tweetnacl'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { decryptMessage, encryptMessage, fromHex, toHex } from './crypto.js'
+import { REQUEST_STATUSES } from './mcp.js'
 import { joinAsHuman, startTestRelay, type TestRelay } from './testRelay.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -367,6 +368,8 @@ describe('cli mcp', () => {
     expect(res.stdout).toBe('')
     expect(res.stderr).toContain('clanker-wallet mcp')
     expect(res.stderr).toContain('request_evm_tx')
+    expect(res.stderr).toContain(`get_request       ${REQUEST_STATUSES.join(' | ')};`)
+    expect(res.stderr).toMatch(/the human may still approve/)
     expect(existsSync(join(home, '.clanker-wallet'))).toBe(false)
   })
 

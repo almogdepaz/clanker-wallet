@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { ClankerWallet, InvalidTxError, validateTransfer, validateTx } from '../dist/index.js'
-import { createMcpServer, MAX_WAIT_SECONDS } from '../dist/mcp.js'
+import { createMcpServer, MAX_WAIT_SECONDS, REQUEST_STATUSES } from '../dist/mcp.js'
 import { readFileSync, writeFileSync, mkdirSync, existsSync, chmodSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
@@ -327,13 +327,14 @@ every request waits for the human to approve it on their own device.
 tools:
   request_evm_tx    ask for an evm transaction (value in wei, integer string) -> { request_id }
   request_transfer  ask for a bitcoin send (amount in sats, integer string) -> { request_id }
-  get_request       pending | approved (tx_hash) | rejected | failed | expired; wait_seconds up to ${MAX_WAIT_SECONDS}
+  get_request       ${REQUEST_STATUSES.join(' | ')}; wait_seconds up to ${MAX_WAIT_SECONDS}
   list_pairings     paired chain families, networks, wallets, and the agent fingerprint
 
 claude code:     claude mcp add clanker-wallet -- npx -y clanker-wallet mcp
 other hosts:     {"mcpServers":{"clanker-wallet":{"command":"npx","args":["-y","clanker-wallet","mcp"]}}}
 
-requests are kept in memory: a restart forgets pending ones, and each expires after 1 h.
+requests are kept in memory: after 1 h the server stops waiting (expired), and a restart forgets pending ones.
+expired, unknown (relay lost after delivery) or forgotten: the human may still approve it, so ask before sending it again.
 docs: https://clanker-wallet.xyz/SKILL.md
 `)
 }
