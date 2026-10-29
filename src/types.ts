@@ -68,6 +68,10 @@ export interface RequestTxOptions {
   context?: TxContext
   /** timeout in ms (default: 3_600_000 = 1hr) */
   timeout_ms?: number
+  /** fail when the relay hasn't confirmed joining the room this long after connecting (default: only timeout_ms applies); nothing was sent then */
+  join_timeout_ms?: number
+  /** aborting before the relay confirms the join fails the request with nothing sent; after that it only stops waiting */
+  signal?: AbortSignal
 }
 
 /** wallet families a transfer can go to */
@@ -113,4 +117,8 @@ export interface RequestTransferOptions {
   context?: TxContext
   /** timeout in ms (default: 3_600_000 = 1hr) */
   timeout_ms?: number
+  /** fail when the relay hasn't confirmed joining the room this long after connecting (default: only timeout_ms applies); nothing was sent then */
+  join_timeout_ms?: number
+  /** aborting before the relay confirms the join fails the request with nothing sent; after that it only stops waiting */
+  signal?: AbortSignal
 }

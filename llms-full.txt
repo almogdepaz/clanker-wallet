@@ -93,6 +93,35 @@ Show agent identity (agent_id and public_key).
 | 4 | Not paired (`send`: not paired for that chain family) |
 | 5 | Invalid arguments (bad or missing flag; nothing sent) |
 
+## MCP (assistants)
+
+`clanker-wallet mcp` runs an MCP server over stdio, so an assistant (Claude Desktop, Claude Code, Cursor, or another MCP host that runs local commands) can ask for transactions as tool calls. The human approves every request on their own device; the server holds no wallet keys. It uses the CLI's identity and pairings in `~/.clanker-wallet/`, so pair first (`clanker-wallet pair '<JSON>'`, once per chain family). In a sandbox the server needs the same relay access and `~/.clanker-wallet/` writes as the CLI.
+
+Claude Code:
+
+```bash
+claude mcp add clanker-wallet -- npx -y clanker-wallet mcp
+```
+
+Claude Desktop (`claude_desktop_config.json`), Cursor (`~/.cursor/mcp.json`), and any other MCP host that runs local stdio servers (command `npx`, args `-y clanker-wallet mcp`):
+
+```json
+{
+  "mcpServers": {
+    "clanker-wallet": { "command": "npx", "args": ["-y", "clanker-wallet", "mcp"] }
+  }
+}
+```
+
+| Tool | Arguments | Returns |
+|------|-----------|---------|
+| `request_evm_tx` | `chain_id`, `to`, `value` (wei, integer string), `data` (default `0x`), `reason`, optional `urgency` / `expected_outcome` | `{"request_id":"req_...","status":"pending","expires_at":"..."}` |
+| `request_transfer` | `family` (`bitcoin`), `network` (`mainnet`, `testnet`, `signet`), `to`, `amount` (sats, integer string), `reason`, optional `urgency` / `expected_outcome` | as above |
+| `get_request` | `request_id`, optional `wait_seconds` (at most 50) | `status`: `pending`, `approved` (with `tx_hash`), `rejected`, `failed` (with `error`), `unknown` (with `error`) or `expired` |
+| `list_pairings` | none | `agent_id`, `fingerprint`, and the paired families (`evm`, `bitcoin`) with network, wallet and mode |
+
+Requests are asynchronous: a request tool returns once the relay has the request, then the assistant calls `get_request` (with `wait_seconds` to wait for an answer) until the status is no longer `pending`. Invalid input or a missing pairing is a tool error, and nothing is sent. Pending requests live in the server process: after 1 h the server stops waiting and reports `expired`, and a restarted server no longer knows them (`get_request` then reports an unknown `request_id`). In both cases the human may still approve the request in their wallet, so ask them before sending it again. `unknown` means the request was delivered but the server lost its relay connection: the human may still approve it, so ask them before sending it again. Chia is not offered over MCP yet.
+
 ## TypeScript SDK
 
 ```typescript

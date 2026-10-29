@@ -1,13 +1,16 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { mkdtempSync, mkdirSync, readFileSync, statSync, chmodSync, existsSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, chmodSync, existsSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import nacl from 'tweetnacl'
+import { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { decryptMessage, encryptMessage, fromHex, toHex } from './crypto.js'
-import { startTestRelay, type TestRelay } from './testRelay.js'
+import { REQUEST_STATUSES } from './mcp.js'
+import { joinAsHuman, startTestRelay, type TestRelay } from './testRelay.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const CLI = join(ROOT, 'bin', 'cli.js')
@@ -147,6 +150,23 @@ describe('cli tx', () => {
     const { status, error } = JSON.parse(res.stdout)
     expect(status).toBe('error')
     expect(error).toContain(deadRelay)
+  })
+
+  it('reports a relay refusing the request as before: exit 3, status error, the relay message', async () => {
+    const refusing = await startTestRelay({ refuseMessages: 'room rate limited' })
+    try {
+      const home = mkdtempSync(join(tmpdir(), 'clanker-cli-'))
+      runCli(home, 'pair', JSON.stringify({ version: 1, pubkey: randomBytes(32).toString('hex'), relay: refusing.url, wallet: WALLET }))
+      const child = spawn(process.execPath, [CLI, 'tx', '--chain', '84532', '--to', TO, '--value', '1', '--timeout', '5000'], {
+        env: { ...process.env, HOME: home },
+      })
+      let stdout = ''
+      child.stdout.on('data', (chunk) => { stdout += chunk })
+      expect(await new Promise((resolve) => child.on('exit', resolve))).toBe(3)
+      expect(JSON.parse(stdout)).toEqual({ status: 'error', error: 'relay error: room rate limited' })
+    } finally {
+      await refusing.close()
+    }
   })
 
   // claude code's sandbox only lets traffic out through HTTPS_PROXY, which node's WebSocket ignores without NODE_USE_ENV_PROXY
@@ -346,7 +366,124 @@ describe('cli --help', () => {
     expect(res.stderr).toContain('--urgency <low|medium|high>')
     expect(res.stderr).toContain('send --btc <mainnet|testnet|signet>')
     expect(res.stderr).toContain('send --xch <mainnet|testnet11>')
+    expect(res.stderr).toMatch(/^  mcp +.*MCP server/m)
   })
+})
+
+describe('cli mcp', () => {
+  const WALLET = '0x1111111111111111111111111111111111111111'
+  const TO = '0x2222222222222222222222222222222222222222'
+  let relay: TestRelay
+
+  beforeAll(async () => { relay = await startTestRelay() })
+  afterAll(() => relay.close())
+
+  it('mcp --help prints usage on stderr, keeps stdout empty, and creates no identity', () => {
+    const home = mkdtempSync(join(tmpdir(), 'clanker-cli-'))
+    const res = spawnSync(process.execPath, [CLI, 'mcp', '--help'], { env: { ...process.env, HOME: home }, encoding: 'utf8' })
+    expect(res.status).toBe(0)
+    expect(res.stdout).toBe('')
+    expect(res.stderr).toContain('clanker-wallet mcp')
+    expect(res.stderr).toContain('request_evm_tx')
+    expect(res.stderr).toContain(`get_request       ${REQUEST_STATUSES.join(' | ')};`)
+    expect(res.stderr).toMatch(/the human may still approve/)
+    expect(existsSync(join(home, '.clanker-wallet'))).toBe(false)
+  })
+
+  it('answers a malformed line with a parse error, keeps serving, and exits 0 when stdin ends', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'clanker-cli-'))
+    const child = spawn(process.execPath, [CLI, 'mcp'], { env: { ...process.env, HOME: home } })
+    let stdout = ''
+    child.stdout.on('data', (d) => { stdout += d })
+    child.stdin.write('this is not json\n')
+    child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 7, method: 'ping' }) + '\n')
+    await vi.waitFor(() => { if (stdout.split('\n').filter(Boolean).length < 2) throw new Error('waiting for replies') }, { timeout: 10_000, interval: 50 })
+    child.stdin.end()
+    const code = await new Promise((resolve) => child.on('exit', resolve))
+    expect(code).toBe(0)
+    // stdout carries only protocol messages
+    const replies = stdout.split('\n').filter(Boolean).map((line) => JSON.parse(line))
+    expect(replies).toEqual([
+      { jsonrpc: '2.0', id: null, error: { code: -32700, message: expect.any(String) } },
+      { jsonrpc: '2.0', id: 7, result: {} },
+    ])
+  }, 20_000)
+
+  it('conforms to the MCP SDK stdio client: initialize, tools/list, and a request approved through the relay', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'clanker-cli-'))
+    const human = await joinAsHuman(relay.url, (req) => ({ request_id: req.request_id, status: 'approved', tx_hash: '0x' + 'cd'.repeat(32) }))
+    runCli(home, 'pair', JSON.stringify({ version: 1, pubkey: human.room, relay: relay.url, wallet: WALLET }))
+
+    const transport = new StdioClientTransport({ command: process.execPath, args: [CLI, 'mcp'], env: { ...process.env, HOME: home } as Record<string, string>, stderr: 'pipe' })
+    const client = new Client({ name: 'conformance', version: '1.0.0' })
+    try {
+      await client.connect(transport)
+      const { version } = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
+      expect(client.getServerVersion()).toEqual({ name: 'clanker-wallet', version })
+
+      const { tools } = await client.listTools()
+      expect(tools.map((t) => t.name)).toEqual(['request_evm_tx', 'request_transfer', 'get_request', 'list_pairings'])
+
+      const sent = await client.callTool({ name: 'request_evm_tx', arguments: { chain_id: 84532, to: TO, value: '1', reason: 'conformance' } })
+      expect(sent.isError).toBeFalsy()
+      const { request_id } = JSON.parse((sent.content as any)[0].text)
+
+      const got = await client.callTool({ name: 'get_request', arguments: { request_id, wait_seconds: 5 } })
+      expect(JSON.parse((got.content as any)[0].text)).toEqual({ request_id, status: 'approved', tx_hash: '0x' + 'cd'.repeat(32) })
+      // the agent identity is the cli's: the same one `whoami` shows
+      const { agent_id } = JSON.parse(runCli(home, 'whoami'))
+      expect(human.requests[0].agent_id).toBe(agent_id)
+
+      // context keys go out in the cli's order, whatever order the assistant passes them in
+      await client.callTool({ name: 'request_evm_tx', arguments: { expected_outcome: 'paid', urgency: 'low', reason: 'via mcp', chain_id: 84532, to: TO, value: '1' } })
+      const tx = spawn(process.execPath, [CLI, 'tx', '--chain', '84532', '--to', TO, '--value', '1', '--expected-outcome', 'paid', '--urgency', 'low', '--reason', 'via cli', '--timeout', '10000'],
+        { env: { ...process.env, HOME: home }, stdio: 'ignore' })
+      expect(await new Promise((resolve) => tx.on('exit', resolve))).toBe(0)
+      const contextKeys = (reason: string) => Object.keys(human.requests.find((r) => r.context?.reason === reason).context)
+      expect(contextKeys('via mcp')).toEqual(contextKeys('via cli'))
+      expect(contextKeys('via cli')).toEqual(['reason', 'urgency', 'expected_outcome'])
+    } finally {
+      await client.close()
+      human.close()
+    }
+  }, 20_000)
+})
+
+describe('cli mcp identity', () => {
+  const WALLET = '0x1111111111111111111111111111111111111111'
+  const TO = '0x2222222222222222222222222222222222222222'
+  let relay: TestRelay
+  beforeAll(async () => { relay = await startTestRelay() })
+  afterAll(() => relay.close())
+
+  it('keeps the startup identity for every request, even when identity.json disappears mid-run', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'clanker-cli-'))
+    const human = await joinAsHuman(relay.url, (req) => ({ request_id: req.request_id, status: 'approved', tx_hash: '0x' + 'ef'.repeat(32) }))
+    runCli(home, 'pair', JSON.stringify({ version: 1, pubkey: human.room, relay: relay.url, wallet: WALLET }))
+    const identityFile = join(home, '.clanker-wallet', 'identity.json')
+
+    const transport = new StdioClientTransport({ command: process.execPath, args: [CLI, 'mcp'], env: { ...process.env, HOME: home } as Record<string, string>, stderr: 'pipe' })
+    const client = new Client({ name: 'identity', version: '1.0.0' })
+    const request = async () => {
+      const sent = await client.callTool({ name: 'request_evm_tx', arguments: { chain_id: 84532, to: TO, value: '1', reason: 'identity' } })
+      expect(sent.isError).toBeFalsy()
+      const { request_id } = JSON.parse((sent.content as any)[0].text)
+      await client.callTool({ name: 'get_request', arguments: { request_id, wait_seconds: 5 } })
+    }
+    try {
+      await client.connect(transport)
+      await request()
+      rmSync(identityFile)
+      await request()
+      expect(human.requests).toHaveLength(2)
+      expect(human.requests[1].agent_id).toBe(human.requests[0].agent_id)
+      // nothing regenerated a key behind the human's back
+      expect(existsSync(identityFile)).toBe(false)
+    } finally {
+      await client.close()
+      human.close()
+    }
+  }, 20_000)
 })
 
 describe('cli --version', () => {
