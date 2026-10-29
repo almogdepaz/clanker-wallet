@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { mkdtempSync, mkdirSync, readFileSync, statSync, chmodSync, existsSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, chmodSync, existsSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -425,6 +425,43 @@ describe('cli mcp', () => {
       const contextKeys = (reason: string) => Object.keys(human.requests.find((r) => r.context?.reason === reason).context)
       expect(contextKeys('via mcp')).toEqual(contextKeys('via cli'))
       expect(contextKeys('via cli')).toEqual(['reason', 'urgency', 'expected_outcome'])
+    } finally {
+      await client.close()
+      human.close()
+    }
+  }, 20_000)
+})
+
+describe('cli mcp identity', () => {
+  const WALLET = '0x1111111111111111111111111111111111111111'
+  const TO = '0x2222222222222222222222222222222222222222'
+  let relay: TestRelay
+  beforeAll(async () => { relay = await startTestRelay() })
+  afterAll(() => relay.close())
+
+  it('keeps the startup identity for every request, even when identity.json disappears mid-run', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'clanker-cli-'))
+    const human = await joinAsHuman(relay.url, (req) => ({ request_id: req.request_id, status: 'approved', tx_hash: '0x' + 'ef'.repeat(32) }))
+    runCli(home, 'pair', JSON.stringify({ version: 1, pubkey: human.room, relay: relay.url, wallet: WALLET }))
+    const identityFile = join(home, '.clanker-wallet', 'identity.json')
+
+    const transport = new StdioClientTransport({ command: process.execPath, args: [CLI, 'mcp'], env: { ...process.env, HOME: home } as Record<string, string>, stderr: 'pipe' })
+    const client = new Client({ name: 'identity', version: '1.0.0' })
+    const request = async () => {
+      const sent = await client.callTool({ name: 'request_evm_tx', arguments: { chain_id: 84532, to: TO, value: '1', reason: 'identity' } })
+      expect(sent.isError).toBeFalsy()
+      const { request_id } = JSON.parse((sent.content as any)[0].text)
+      await client.callTool({ name: 'get_request', arguments: { request_id, wait_seconds: 5 } })
+    }
+    try {
+      await client.connect(transport)
+      await request()
+      rmSync(identityFile)
+      await request()
+      expect(human.requests).toHaveLength(2)
+      expect(human.requests[1].agent_id).toBe(human.requests[0].agent_id)
+      // nothing regenerated a key behind the human's back
+      expect(existsSync(identityFile)).toBe(false)
     } finally {
       await client.close()
       human.close()

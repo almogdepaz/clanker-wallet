@@ -169,9 +169,8 @@ function contextFrom(flags) {
   return Object.keys(context).length > 0 ? context : undefined
 }
 
-/** a ClankerWallet paired from a saved pairing */
-function pairedWallet(pairing) {
-  const wallet = getWallet()
+/** a ClankerWallet (the saved identity by default) paired from a saved pairing */
+function pairedWallet(pairing, wallet = getWallet()) {
   wallet.pair(JSON.stringify({
     version: 1,
     pubkey: pairing.pubkey,
@@ -348,7 +347,8 @@ async function cmdMcp(flags) {
     version: packageVersion(),
     identity: { agent_id: identity.agentId, fingerprint: fingerprint(hex(identity.publicKey)) },
     loadPairing,
-    wallet: pairedWallet,
+    // the identity loaded at startup, which list_pairings shows: re-reading identity.json per request could switch agents mid-run
+    wallet: (pairing) => pairedWallet(pairing, new ClankerWallet({ secretKey: identity.secretKey })),
   })
   const lines = createInterface({ input: process.stdin, crlfDelay: Infinity })
   // each line is answered when it settles, so a get_request that waits never holds up the others
