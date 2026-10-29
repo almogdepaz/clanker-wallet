@@ -402,14 +402,15 @@ describe('expiry', () => {
   async function send(call: ReturnType<typeof server>['call']) {
     const sending = call('request_evm_tx', evmArgs)
     await vi.advanceTimersByTimeAsync(0)
-    return (await sending).body.request_id as string
+    const { request_id, expires_at } = (await sending).body
+    return { request_id: request_id as string, expiresAt: Date.parse(expires_at) }
   }
 
   it('a get_request waiting through expiry reports expired, even when its timer fires before the clock reaches expires_at', async () => {
     fakeTimersOnly()
     try {
       const { call } = stubServer(400)
-      const request_id = await send(call)
+      const { request_id } = await send(call)
       const waiting = call('get_request', { request_id, wait_seconds: 5 })
       await vi.advanceTimersByTimeAsync(400)
       expect((await waiting).body).toEqual({ request_id, status: 'expired' })
@@ -422,10 +423,24 @@ describe('expiry', () => {
     fakeTimersOnly()
     try {
       const { call } = stubServer(400, 'timesOut')
-      const request_id = await send(call)
+      const { request_id } = await send(call)
       await vi.advanceTimersByTimeAsync(400)
       expect((await call('get_request', { request_id })).body).toEqual({ request_id, status: 'expired' })
     } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a get_request handled after expires_at but before the expiry timer has run reports expired', async () => {
+    fakeTimersOnly()
+    const { call } = stubServer(400)
+    const { request_id, expiresAt } = await send(call)
+    // a busy process: the clock passes expires_at while the expiry timer has not run yet
+    const now = vi.spyOn(Date, 'now').mockReturnValue(expiresAt)
+    try {
+      expect((await call('get_request', { request_id })).body).toEqual({ request_id, status: 'expired' })
+    } finally {
+      now.mockRestore()
       vi.useRealTimers()
     }
   })
@@ -434,7 +449,7 @@ describe('expiry', () => {
     fakeTimersOnly()
     try {
       const { call } = stubServer(400, 'approved')
-      const request_id = await send(call)
+      const { request_id } = await send(call)
       expect((await call('get_request', { request_id })).body.status).toBe('approved')
       expect(vi.getTimerCount()).toBe(0)
     } finally {

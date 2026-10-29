@@ -289,6 +289,8 @@ export function createMcpServer(options: McpServerOptions): { handleLine: (line:
       await Promise.race(waits)
       clearTimeout(timer)
     }
+    // a fallback for an expiry timer that runs late (a busy process): it only marks expired once the clock has passed expires_at
+    if (record.status === 'pending' && Date.now() >= record.expiresAt) record.settle('expired')
 
     const { status, tx_hash, error } = record
     if (status === 'pending') return toolResult({ request_id, status, expires_at: new Date(record.expiresAt).toISOString() })
