@@ -184,9 +184,19 @@ describe('request_evm_tx + get_request', () => {
 
   it('reports expired, not failed, when the wallet times the request out before anyone asks', async () => {
     const h = await human()
-    const { call } = server({ evm: evmPairing(h.room) }, { requestTtlMs: 200 })
+    let options: any
+    let walletRequest: Promise<string> | undefined
+    const { call } = server({ evm: evmPairing(h.room) }, {
+      requestTtlMs: 200,
+      onWallet: (wallet) => {
+        const requestTx = wallet.requestTx.bind(wallet)
+        vi.spyOn(wallet, 'requestTx').mockImplementation((o) => { options = o; return walletRequest = requestTx(o) })
+      },
+    })
     const { request_id } = (await call('request_evm_tx', evmArgs)).body
-    await new Promise((r) => setTimeout(r, 600))
+    // the wallet gets the ttl and times out on its own, before any get_request
+    expect(options.timeout_ms).toBe(200)
+    await expect(walletRequest).rejects.toThrow('timed out after 200ms')
     expect((await call('get_request', { request_id })).body).toEqual({ request_id, status: 'expired' })
   })
 
@@ -318,6 +328,31 @@ describe('get_request', () => {
     const res = await call('get_request', { request_id, wait_seconds: wait })
     expect(res.isError).toBe(true)
     expect(res.text).toContain('wait_seconds')
+  })
+
+  it(`caps wait_seconds at ${MAX_WAIT_SECONDS}`, async () => {
+    const { call } = server({ evm: evmPairing(toHex(randomBytes(32))) }, {
+      // a request the human never answers, without a relay, so fake timers can't stall a socket
+      onWallet: (wallet) => {
+        vi.spyOn(wallet, 'requestTx').mockImplementation(() => {
+          setTimeout(() => (wallet as any).emit('request_sent', { request_id: 'req_1_capped' }))
+          return new Promise(() => {})
+        })
+      },
+    })
+    const { request_id } = (await call('request_evm_tx', evmArgs)).body
+    vi.useFakeTimers()
+    try {
+      let done = false
+      const waiting = call('get_request', { request_id, wait_seconds: 999 }).finally(() => { done = true })
+      await vi.advanceTimersByTimeAsync(MAX_WAIT_SECONDS * 1000 - 1)
+      expect(done).toBe(false)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(done).toBe(true)
+      expect((await waiting).body.status).toBe('pending')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('does not hold up other calls while it waits', async () => {

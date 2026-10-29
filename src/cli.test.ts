@@ -416,6 +416,15 @@ describe('cli mcp', () => {
       // the agent identity is the cli's: the same one `whoami` shows
       const { agent_id } = JSON.parse(runCli(home, 'whoami'))
       expect(human.requests[0].agent_id).toBe(agent_id)
+
+      // context keys go out in the cli's order, whatever order the assistant passes them in
+      await client.callTool({ name: 'request_evm_tx', arguments: { expected_outcome: 'paid', urgency: 'low', reason: 'via mcp', chain_id: 84532, to: TO, value: '1' } })
+      const tx = spawn(process.execPath, [CLI, 'tx', '--chain', '84532', '--to', TO, '--value', '1', '--expected-outcome', 'paid', '--urgency', 'low', '--reason', 'via cli', '--timeout', '10000'],
+        { env: { ...process.env, HOME: home }, stdio: 'ignore' })
+      expect(await new Promise((resolve) => tx.on('exit', resolve))).toBe(0)
+      const contextKeys = (reason: string) => Object.keys(human.requests.find((r) => r.context?.reason === reason).context)
+      expect(contextKeys('via mcp')).toEqual(contextKeys('via cli'))
+      expect(contextKeys('via cli')).toEqual(['reason', 'urgency', 'expected_outcome'])
     } finally {
       await client.close()
       human.close()
