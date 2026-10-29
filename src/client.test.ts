@@ -554,13 +554,13 @@ describe('join timeout and abort', () => {
 
   test('the join timeout stops counting once joined: a human slower than it still answers', async () => {
     const human = await joinAsHuman(late.url, async (req) => {
-      await sleep(500)
+      await sleep(1000)
       return { request_id: req.request_id, status: 'approved', tx_hash: '0xslow' }
     })
     const agent = new ClankerWallet()
     agent.pair(JSON.stringify({ version: 1, pubkey: human.room, relay: late.url, wallet: RECIPIENT }))
-    // joined comes at 600 ms, the answer 500 ms after that: both inside the 1000 ms join timeout only if it were still running
-    await expect(agent.requestTx({ ...tx, timeout_ms: 10000, join_timeout_ms: 1000 })).resolves.toBe('0xslow')
+    // joined comes at 600 ms and the answer at about 1600 ms, past the 1400 ms join timeout: it resolves only if joined cleared it
+    await expect(agent.requestTx({ ...tx, timeout_ms: 10000, join_timeout_ms: 1400 })).resolves.toBe('0xslow')
     human.close()
   })
 
