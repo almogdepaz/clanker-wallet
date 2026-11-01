@@ -2,6 +2,8 @@ import { createServer, type Server } from 'node:http'
 import { createHash } from 'node:crypto'
 import type { Socket } from 'node:net'
 import type { AddressInfo } from 'node:net'
+import nacl from 'tweetnacl'
+import { decryptMessage, encryptMessage, fromHex, toHex } from './crypto.js'
 
 /**
  * minimal in-process relay: RFC 6455 text frames over node:http, `join` → `joined`,
@@ -58,7 +60,14 @@ function decodeFrames(buf: Buffer): [{ opcode: number; data: Buffer }[], Buffer]
   return [frames, buf.subarray(off)]
 }
 
-export async function startTestRelay(): Promise<TestRelay> {
+export interface TestRelayOptions {
+  /** delay `joined` by this long; Infinity never answers join (a relay or proxy that accepts the socket and stalls) */
+  joinDelayMs?: number
+  /** answer every `message` with this relay error and drop it, as the relay does for a refused request (rate limited, too large) */
+  refuseMessages?: string
+}
+
+export async function startTestRelay(options: TestRelayOptions = {}): Promise<TestRelay> {
   const rooms = new Map<string, Set<Socket>>()
   const sockets = new Set<Socket>()
   const received: any[] = []
@@ -94,11 +103,19 @@ export async function startTestRelay(): Promise<TestRelay> {
         try { msg = JSON.parse(data.toString()) } catch { continue }
         received.push(msg)
         if (msg.type === 'join' && typeof msg.room === 'string') {
-          if (room) rooms.get(room)?.delete(socket)
-          room = msg.room
-          if (!rooms.has(msg.room)) rooms.set(msg.room, new Set())
-          rooms.get(msg.room)!.add(socket)
-          socket.write(encodeTextFrame(JSON.stringify({ type: 'joined', room: msg.room })))
+          const join = () => {
+            if (socket.destroyed) return
+            if (room) rooms.get(room)?.delete(socket)
+            room = msg.room
+            if (!rooms.has(msg.room)) rooms.set(msg.room, new Set())
+            rooms.get(msg.room)!.add(socket)
+            socket.write(encodeTextFrame(JSON.stringify({ type: 'joined', room: msg.room })))
+          }
+          const delay = options.joinDelayMs ?? 0
+          if (delay === 0) join()
+          else if (Number.isFinite(delay)) setTimeout(join, delay)
+        } else if (msg.type === 'message' && options.refuseMessages !== undefined) {
+          socket.write(encodeTextFrame(JSON.stringify({ type: 'error', message: options.refuseMessages })))
         } else if (msg.type === 'message' && room && msg.room === room) {
           const out = encodeTextFrame(JSON.stringify({ type: 'message', room, payload: msg.payload }))
           for (const peer of rooms.get(room) ?? []) {
@@ -120,4 +137,46 @@ export async function startTestRelay(): Promise<TestRelay> {
       server.close(() => r())
     }),
   }
+}
+
+/** the human's side of a room: a fresh pairing key, joined to its own room on the relay */
+export interface TestHuman {
+  /** the human pubkey (hex): the room, and the `pubkey` of the pairing JSON */
+  room: string
+  /** every decrypted agent request, in arrival order */
+  requests: any[]
+  close: () => void
+}
+
+/**
+ * join a room as the human and answer each agent request with `respond(request)`
+ * (encrypted to the sending agent, whenever it resolves); a null reply leaves the request unanswered.
+ */
+export async function joinAsHuman(relayUrl: string, respond: (request: any) => Record<string, unknown> | null | Promise<Record<string, unknown> | null> = () => null): Promise<TestHuman> {
+  const human = nacl.box.keyPair()
+  const room = toHex(human.publicKey)
+  const requests: any[] = []
+  const ws = new WebSocket(relayUrl)
+  await new Promise((resolve) => ws.addEventListener('open', resolve, { once: true }))
+  const joined = new Promise((resolve) => ws.addEventListener('message', resolve, { once: true }))
+  ws.send(JSON.stringify({ type: 'join', room }))
+  await joined
+
+  ws.addEventListener('message', async (event) => {
+    const frame = JSON.parse(event.data as string)
+    if (frame.type !== 'message') return
+    const envelope = JSON.parse(frame.payload)
+    if (envelope.sender_pubkey === room) return
+    const request = JSON.parse(decryptMessage(envelope.ciphertext, fromHex(envelope.sender_pubkey), human.secretKey)!)
+    requests.push(request)
+    const reply = await respond(request)
+    if (!reply || ws.readyState !== WebSocket.OPEN) return
+    ws.send(JSON.stringify({
+      type: 'message',
+      room,
+      payload: JSON.stringify({ sender_pubkey: room, ciphertext: encryptMessage(JSON.stringify(reply), fromHex(envelope.sender_pubkey), human.secretKey) }),
+    }))
+  })
+
+  return { room, requests, close: () => ws.close() }
 }
