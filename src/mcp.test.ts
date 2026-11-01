@@ -134,6 +134,14 @@ describe('mcp protocol', () => {
     expect(MAX_WAIT_SECONDS).toBeLessThanOrEqual(50)
     expect(result.tools).toEqual(MCP_TOOLS)
   })
+
+  it('marks the reading tools read-only, so an assistant can poll without asking each time', async () => {
+    const { result } = await rpc('tools/list')
+    const annotations = Object.fromEntries(result.tools.map((t: any) => [t.name, t.annotations]))
+    const request = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true }
+    const read = { readOnlyHint: true, openWorldHint: false }
+    expect(annotations).toEqual({ request_evm_tx: request, request_transfer: request, get_request: read, list_pairings: read })
+  })
 })
 
 describe('request_evm_tx + get_request', () => {
