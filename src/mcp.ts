@@ -56,6 +56,14 @@ const CONTEXT_PROPERTIES = {
   expected_outcome: { type: 'string', description: 'what will happen once it is sent' },
 }
 
+/**
+ * MCP tool annotations: assistants (ChatGPT, dots, Claude) may skip their confirmation prompt for read-only tools.
+ * a request moves nothing until the human approves it on their device, so it is not destructive, but each call
+ * sends a new request to the human's wallet.
+ */
+const REQUEST_HINTS = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true }
+const READ_HINTS = { readOnlyHint: true, openWorldHint: false }
+
 export const MCP_TOOLS = [
   {
     name: 'request_evm_tx',
@@ -74,6 +82,7 @@ export const MCP_TOOLS = [
       },
       required: ['chain_id', 'to', 'value', 'reason'],
     },
+    annotations: REQUEST_HINTS,
   },
   {
     name: 'request_transfer',
@@ -92,6 +101,7 @@ export const MCP_TOOLS = [
       },
       required: ['family', 'network', 'to', 'amount', 'reason'],
     },
+    annotations: REQUEST_HINTS,
   },
   {
     name: 'get_request',
@@ -108,12 +118,14 @@ export const MCP_TOOLS = [
       },
       required: ['request_id'],
     },
+    annotations: READ_HINTS,
   },
   {
     name: 'list_pairings',
     description: 'List the wallets you can request on (chain family, network, wallet address, mode) and your agent fingerprint, ' +
       'which the human compares in the web app before trusting you.',
     inputSchema: { type: 'object', properties: {} },
+    annotations: READ_HINTS,
   },
 ]
 
