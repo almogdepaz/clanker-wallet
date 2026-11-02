@@ -143,6 +143,9 @@ describe('mcp protocol', () => {
       expect(properties.from, name).toMatchObject({ type: 'string' })
       expect(required, name).not.toContain('from')
       expect(properties.from.description, name).toContain('list_pairings')
+      // pairings are per family, not per chain_id: "this chain" would read as chain_id
+      expect(properties.from.description, name).toMatch(/family/)
+      expect(properties.from.description, name).not.toMatch(/\bchain\b/)
       return properties.from.description
     })
     expect(descriptions[0]).toBe(descriptions[1])

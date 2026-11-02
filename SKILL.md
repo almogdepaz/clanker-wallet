@@ -215,8 +215,8 @@ Claude Desktop (`claude_desktop_config.json`), Cursor (`~/.cursor/mcp.json`), an
 
 | Tool | Arguments | Returns |
 |------|-----------|---------|
-| `request_evm_tx` | `chain_id`, `to`, `value` (wei, integer string), `data` (default `0x`), `reason`, optional `urgency` / `expected_outcome` / `from` (the paired wallet to send from, needed when several of that chain are paired) | `{"request_id":"req_...","status":"pending","expires_at":"..."}` |
-| `request_transfer` | `family` (`bitcoin`), `network` (`mainnet`, `testnet`, `signet`), `to`, `amount` (sats, integer string), `reason`, optional `urgency` / `expected_outcome` / `from` (the paired wallet to send from, needed when several of that chain are paired) | as above |
+| `request_evm_tx` | `chain_id`, `to`, `value` (wei, integer string), `data` (default `0x`), `reason`, optional `urgency` / `expected_outcome` / `from` (the paired wallet to send from, needed when several wallets of the same family are paired) | `{"request_id":"req_...","status":"pending","expires_at":"..."}` |
+| `request_transfer` | `family` (`bitcoin`), `network` (`mainnet`, `testnet`, `signet`), `to`, `amount` (sats, integer string), `reason`, optional `urgency` / `expected_outcome` / `from` (the paired wallet to send from, needed when several wallets of the same family are paired) | as above |
 | `get_request` | `request_id`, optional `wait_seconds` (at most 50) | `status`: `pending`, `approved` (with `tx_hash`), `rejected`, `failed` (with `error`), `unknown` (with `error`) or `expired` |
 | `list_pairings` | none | `agent_id`, `fingerprint`, and the paired families (`evm`, `bitcoin`) with network, wallet and mode |
 

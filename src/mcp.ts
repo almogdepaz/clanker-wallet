@@ -58,7 +58,7 @@ const CONTEXT_PROPERTIES = {
 
 /** the same on both request tools; the hosted connector copies these definitions verbatim */
 const FROM_PROPERTY = {
-  from: { type: 'string', description: 'the paired wallet address to send from, as list_pairings shows it; needed only when several wallets of this chain are paired' },
+  from: { type: 'string', description: 'the paired wallet address to send from, as list_pairings shows it; needed only when several wallets of the same family (evm or bitcoin) are paired' },
 }
 
 /**
