@@ -282,8 +282,8 @@ describe('request_evm_tx + get_request', () => {
     const { request_id } = (await call('request_evm_tx', { ...evmArgs, from: '0xABCDEFabcdefABCDEFabcdefABCDEFabcdefABCD' })).body
     expect((await call('get_request', { request_id, wait_seconds: 5 })).body).toEqual({ request_id, status: 'approved', tx_hash: TX_HASH })
     expect(h.requests).toHaveLength(1)
-    // from picks the pairing; it is not part of the request the wallet receives
-    expect(h.requests[0].from).toBeUndefined()
+    // from picks the pairing; it is nowhere in the request the wallet receives
+    expect(JSON.stringify(h.requests[0])).not.toContain('"from"')
   })
 
   it.each([
@@ -368,7 +368,7 @@ describe('request_transfer', () => {
     const { request_id } = (await call('request_transfer', { ...btcArgs, from: 'TB1ME' })).body
     expect((await call('get_request', { request_id, wait_seconds: 5 })).body).toEqual({ request_id, status: 'approved', tx_hash: TX_HASH })
     expect(h.requests).toHaveLength(1)
-    expect(h.requests[0].from).toBeUndefined()
+    expect(JSON.stringify(h.requests[0])).not.toContain('"from"')
   })
 
   it('refuses from naming another wallet, naming the paired wallet, and sends nothing', async () => {
