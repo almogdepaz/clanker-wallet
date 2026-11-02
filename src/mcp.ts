@@ -208,7 +208,8 @@ function fromArg(args: Record<string, unknown>): string | undefined {
 /** a tool error when `from` names a wallet other than the saved pairing's (case-insensitive: evm hex and bech32 both are) */
 function fromMismatch(family: RequestFamily, from: string | undefined, pairing: SavedPairing): ToolResult | null {
   if (from === undefined || from.toLowerCase() === pairing.wallet?.toLowerCase()) return null
-  const paired = pairing.wallet === null
+  // == null: a cli-written pairing stores null, a hand-written file may leave the key out
+  const paired = pairing.wallet == null
     ? `the ${family} pairing records no wallet address to check it against`
     : `the paired ${family} wallet is ${pairing.wallet}, the only one this server sends from`
   return toolError(`from ${JSON.stringify(from)} is not the paired wallet: ${paired}; nothing was sent`)

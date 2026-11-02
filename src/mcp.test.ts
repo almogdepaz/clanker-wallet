@@ -289,6 +289,7 @@ describe('request_evm_tx + get_request', () => {
   it.each([
     ['another wallet', { from: '0x3333333333333333333333333333333333333333' }, {}, '0x1111111111111111111111111111111111111111'],
     ['a pairing that records no wallet', { from: '0x1111111111111111111111111111111111111111' }, { wallet: null }, 'no wallet address'],
+    ['a pairing file without a wallet key', { from: '0x1111111111111111111111111111111111111111' }, { wallet: undefined }, 'no wallet address'],
     // an empty from is a wrong wallet, not an omitted one
     ['an empty string', { from: '' }, {}, '0x1111111111111111111111111111111111111111'],
   ])('refuses from naming %s, naming the paired wallet, and sends nothing', async (_name, extraArgs, pairingExtra, paired) => {
