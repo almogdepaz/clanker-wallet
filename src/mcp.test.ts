@@ -135,6 +135,20 @@ describe('mcp protocol', () => {
     expect(result.tools).toEqual(MCP_TOOLS)
   })
 
+  it('offers an optional from (the wallet to send from) on both request tools, described the same way', async () => {
+    const { result } = await rpc('tools/list')
+    const byName = Object.fromEntries(result.tools.map((t: any) => [t.name, t]))
+    const descriptions = ['request_evm_tx', 'request_transfer'].map((name) => {
+      const { properties, required } = byName[name].inputSchema
+      expect(properties.from, name).toMatchObject({ type: 'string' })
+      expect(required, name).not.toContain('from')
+      expect(properties.from.description, name).toContain('list_pairings')
+      return properties.from.description
+    })
+    expect(descriptions[0]).toBe(descriptions[1])
+    for (const name of ['get_request', 'list_pairings']) expect(byName[name].inputSchema.properties.from, name).toBeUndefined()
+  })
+
   it('marks the reading tools read-only, so an assistant can poll without asking each time', async () => {
     const { result } = await rpc('tools/list')
     const annotations = Object.fromEntries(result.tools.map((t: any) => [t.name, t.annotations]))

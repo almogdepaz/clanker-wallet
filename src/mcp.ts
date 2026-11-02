@@ -56,6 +56,11 @@ const CONTEXT_PROPERTIES = {
   expected_outcome: { type: 'string', description: 'what will happen once it is sent' },
 }
 
+/** the same on both request tools; the hosted connector copies these definitions verbatim */
+const FROM_PROPERTY = {
+  from: { type: 'string', description: 'the paired wallet address to send from, as list_pairings shows it; needed only when several wallets of this chain are paired' },
+}
+
 /**
  * MCP tool annotations: assistants (ChatGPT, dots, Claude) may skip their confirmation prompt for read-only tools.
  * a request moves nothing until the human approves it on their device, so it is not destructive, but each call
@@ -79,6 +84,7 @@ export const MCP_TOOLS = [
         value: { type: 'string', description: 'integer string in wei; "0" for a contract call that sends no ETH' },
         data: { type: 'string', description: 'hex calldata, default "0x" (a plain transfer)' },
         ...CONTEXT_PROPERTIES,
+        ...FROM_PROPERTY,
       },
       required: ['chain_id', 'to', 'value', 'reason'],
     },
@@ -98,6 +104,7 @@ export const MCP_TOOLS = [
         to: { type: 'string', description: 'segwit address on that network: bc1... on mainnet, tb1... on testnet and signet' },
         amount: { type: 'string', description: 'integer string in sats' },
         ...CONTEXT_PROPERTIES,
+        ...FROM_PROPERTY,
       },
       required: ['family', 'network', 'to', 'amount', 'reason'],
     },
