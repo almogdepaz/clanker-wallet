@@ -275,6 +275,40 @@ describe('request_evm_tx + get_request', () => {
     expect(sentTo(h.room)).toEqual([])
   })
 
+  it('sends from the paired wallet when from names it, in any letter case', async () => {
+    const h = await human(approve)
+    const wallet = '0xabcdefabcdefabcdefabcdefabcdefabcdefabcd'
+    const { call } = server({ evm: evmPairing(h.room, { wallet }) })
+    const { request_id } = (await call('request_evm_tx', { ...evmArgs, from: '0xABCDEFabcdefABCDEFabcdefABCDEFabcdefABCD' })).body
+    expect((await call('get_request', { request_id, wait_seconds: 5 })).body).toEqual({ request_id, status: 'approved', tx_hash: TX_HASH })
+    expect(h.requests).toHaveLength(1)
+    // from picks the pairing; it is not part of the request the wallet receives
+    expect(h.requests[0].from).toBeUndefined()
+  })
+
+  it.each([
+    ['another wallet', { from: '0x3333333333333333333333333333333333333333' }, {}, '0x1111111111111111111111111111111111111111'],
+    ['a pairing that records no wallet', { from: '0x1111111111111111111111111111111111111111' }, { wallet: null }, 'no wallet address'],
+  ])('refuses from naming %s, naming the paired wallet, and sends nothing', async (_name, extraArgs, pairingExtra, paired) => {
+    const h = await human()
+    const { call } = server({ evm: evmPairing(h.room, pairingExtra) })
+    const res = await call('request_evm_tx', { ...evmArgs, ...extraArgs })
+    expect(res.isError).toBe(true)
+    expect(res.text).toContain(extraArgs.from)
+    expect(res.text).toContain(paired)
+    expect(res.text).toMatch(/nothing was sent/)
+    expect(sentTo(h.room)).toEqual([])
+  })
+
+  it.each([[123], [null], [['0x1111111111111111111111111111111111111111']]])('refuses a non-string from %j as a tool error and sends nothing', async (from) => {
+    const h = await human()
+    const { call } = server({ evm: evmPairing(h.room) })
+    const res = await call('request_evm_tx', { ...evmArgs, from })
+    expect(res.isError).toBe(true)
+    expect(res.text).toMatch(/invalid from/)
+    expect(sentTo(h.room)).toEqual([])
+  })
+
   it('refuses when no evm wallet is paired, naming the pairing step', async () => {
     const h = await human()
     const { call } = server({ bitcoin: btcPairing(h.room) })
@@ -321,6 +355,35 @@ describe('request_transfer', () => {
     const res = await call('request_transfer', args)
     expect(res.isError).toBe(true)
     expect(res.text).toContain(field)
+    expect(sentTo(h.room)).toEqual([])
+  })
+
+  it('sends from the paired wallet when from names it, in any letter case', async () => {
+    const h = await human(approve)
+    const { call } = server({ bitcoin: btcPairing(h.room) })
+    const { request_id } = (await call('request_transfer', { ...btcArgs, from: 'TB1ME' })).body
+    expect((await call('get_request', { request_id, wait_seconds: 5 })).body).toEqual({ request_id, status: 'approved', tx_hash: TX_HASH })
+    expect(h.requests).toHaveLength(1)
+    expect(h.requests[0].from).toBeUndefined()
+  })
+
+  it('refuses from naming another wallet, naming the paired wallet, and sends nothing', async () => {
+    const h = await human()
+    const { call } = server({ bitcoin: btcPairing(h.room) })
+    const res = await call('request_transfer', { ...btcArgs, from: 'tb1other' })
+    expect(res.isError).toBe(true)
+    expect(res.text).toContain('tb1other')
+    expect(res.text).toContain('tb1me')
+    expect(res.text).toMatch(/nothing was sent/)
+    expect(sentTo(h.room)).toEqual([])
+  })
+
+  it('refuses a non-string from as a tool error and sends nothing', async () => {
+    const h = await human()
+    const { call } = server({ bitcoin: btcPairing(h.room) })
+    const res = await call('request_transfer', { ...btcArgs, from: 42 })
+    expect(res.isError).toBe(true)
+    expect(res.text).toMatch(/invalid from/)
     expect(sentTo(h.room)).toEqual([])
   })
 

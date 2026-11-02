@@ -198,6 +198,22 @@ function contextFrom(args: Record<string, unknown>): TxContext {
   return context
 }
 
+/** the optional wallet address to send from; undefined means the saved pairing */
+function fromArg(args: Record<string, unknown>): string | undefined {
+  const { from } = args
+  if (from !== undefined && typeof from !== 'string') throw new ToolInputError('invalid from: must be the wallet address as list_pairings shows it')
+  return from
+}
+
+/** a tool error when `from` names a wallet other than the saved pairing's (case-insensitive: evm hex and bech32 both are) */
+function fromMismatch(family: RequestFamily, from: string | undefined, pairing: SavedPairing): ToolResult | null {
+  if (from === undefined || from.toLowerCase() === pairing.wallet?.toLowerCase()) return null
+  const paired = pairing.wallet === null
+    ? `the ${family} pairing records no wallet address to check it against`
+    : `the paired ${family} wallet is ${pairing.wallet}, the only one this server sends from`
+  return toolError(`from ${JSON.stringify(from)} is not the paired wallet: ${paired}; nothing was sent`)
+}
+
 const NOT_PAIRED: Record<RequestFamily, string> = {
   evm: 'not paired with an evm wallet: ask the human to open https://clanker-wallet.xyz, copy the pairing JSON, and run: clanker-wallet pair \'<JSON>\'',
   bitcoin: 'not paired with a bitcoin wallet: ask the human to open the bitcoin tab at https://clanker-wallet.xyz, copy its pairing JSON, and run: clanker-wallet pair \'<JSON>\'',
@@ -212,11 +228,14 @@ export function createMcpServer(options: McpServerOptions): { handleLine: (line:
 
   /**
    * start a request on the family's pairing and answer once the relay has it: { request_id } after
-   * the wallet sends it, or a tool error when it fails first (bad input, unreachable relay, join timeout, cancelled)
+   * the wallet sends it, or a tool error when it fails first (bad input, `from` not the paired wallet, unreachable relay,
+   * join timeout, cancelled)
    */
-  function submit(family: RequestFamily, cancelled: AbortSignal, send: (wallet: ClankerWallet, limits: WalletLimits) => Promise<string>): Promise<ToolResult> {
+  function submit(family: RequestFamily, from: string | undefined, cancelled: AbortSignal, send: (wallet: ClankerWallet, limits: WalletLimits) => Promise<string>): Promise<ToolResult> {
     const pairing = options.loadPairing(family)
     if (!pairing) return Promise.resolve(toolError(NOT_PAIRED[family]))
+    const mismatch = fromMismatch(family, from, pairing)
+    if (mismatch) return Promise.resolve(mismatch)
     const wallet = options.wallet(pairing)
     const expiresAt = Date.now() + ttl
     // a cancel stops the wallet only before it sends: once delivered, the human can still approve, so keep waiting
@@ -260,13 +279,15 @@ export function createMcpServer(options: McpServerOptions): { handleLine: (line:
 
   async function requestEvmTx(args: Record<string, unknown>, cancelled: AbortSignal): Promise<ToolResult> {
     const context = contextFrom(args)
+    const from = fromArg(args)
     const { chain_id, transaction } = validateTx(args.chain_id, { to: args.to, value: args.value, data: args.data ?? '0x' })
-    return submit('evm', cancelled, (wallet, limits) => wallet.requestTx({ chain_id, transaction, context, ...limits }))
+    return submit('evm', from, cancelled, (wallet, limits) => wallet.requestTx({ chain_id, transaction, context, ...limits }))
   }
 
   async function requestTransfer(args: Record<string, unknown>, cancelled: AbortSignal): Promise<ToolResult> {
     if (args.family !== 'bitcoin') throw new ToolInputError(`invalid family: must be "bitcoin", got ${JSON.stringify(args.family)}`)
     const context = contextFrom(args)
+    const from = fromArg(args)
     let request: ReturnType<typeof validateTransfer>
     try {
       request = validateTransfer('bitcoin', args.network, { asset: 'btc', to: args.to, amount: args.amount })
@@ -276,7 +297,7 @@ export function createMcpServer(options: McpServerOptions): { handleLine: (line:
       throw err
     }
     const { chain_network, transfer } = request
-    return submit('bitcoin', cancelled, async (wallet, limits) => {
+    return submit('bitcoin', from, cancelled, async (wallet, limits) => {
       try {
         return await wallet.requestTransfer({ chain_network, transfer, context, ...limits })
       } catch (err) {
