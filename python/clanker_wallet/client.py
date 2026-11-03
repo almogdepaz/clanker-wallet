@@ -184,13 +184,18 @@ class ClankerWallet:
                 "chainId": chain_id,
             }
 
-        return await self._send(request_id, plaintext, options.timeout_ms, simulate)
+        tx_hash = await self._send(request_id, plaintext, options.timeout_ms, simulate)
+        # unreachable: _send lets only a chia approval through without a hash
+        if tx_hash is None:
+            raise TxError(request_id, "approved without a tx hash")
+        return tx_hash
 
-    async def request_transfer(self, options: RequestTransferOptions) -> str:
+    async def request_transfer(self, options: RequestTransferOptions) -> Optional[str]:
         """Send a bitcoin / chia transfer request to the paired human and wait for approval.
 
         The human's wallet builds, signs and broadcasts the transfer. Needs a bitcoin or
-        chia pairing. Returns the transaction id on approval.
+        chia pairing. Returns the transaction id on approval, or None for a chia send the
+        wallet reported no id for (Sage's chia_send); the recipient's balance shows it.
         Raises InvalidTxError (before anything is sent), TxRejectedError,
         TxTimeoutError, TxError, or RelayError.
         """
@@ -223,7 +228,8 @@ class ClankerWallet:
         plaintext = json.dumps(_transfer_request_to_dict(request), separators=(",", ":"), ensure_ascii=False)
 
         # the relay simulator is evm-only: no simulate object for transfers, even on a managed pairing
-        return await self._send(request_id, plaintext, options.timeout_ms, None)
+        # a chia wallet can send without reporting an id (Sage's chia_send answers {}): None, and the recipient's balance shows it
+        return await self._send(request_id, plaintext, options.timeout_ms, None, hash_optional=chain_family == "chia")
 
     async def _send(
         self,
@@ -231,7 +237,8 @@ class ClankerWallet:
         plaintext: str,
         timeout_ms: Optional[int],
         simulate: Optional[Dict[str, Any]],
-    ) -> str:
+        hash_optional: bool = False,
+    ) -> Optional[str]:
         """Deliver a signed request to the paired human and wait for the answer, mapping failures to SDK errors."""
         human_pubkey, room, relay_url = self._human_pubkey, self._human_pubkey_hex, self._relay_url
         if human_pubkey is None or room is None or relay_url is None:
@@ -249,6 +256,7 @@ class ClankerWallet:
                     plaintext=plaintext,
                     request_id=request_id,
                     simulate=simulate,
+                    hash_optional=hash_optional,
                 ),
                 timeout=timeout_ms / 1000.0,
             )
@@ -273,7 +281,8 @@ class ClankerWallet:
         plaintext: str,
         request_id: str,
         simulate: Optional[Dict[str, Any]],
-    ) -> str:
+        hash_optional: bool,
+    ) -> Optional[str]:
         """Open WS, join room, send encrypted request, wait for response."""
         async with websockets.asyncio.client.connect(relay_url) as ws:
             # join the human's room
@@ -333,8 +342,9 @@ class ClankerWallet:
                         if response.request_id != request_id:
                             continue  # not our response
 
-                        if response.status == "approved" and response.tx_hash:
-                            return response.tx_hash
+                        # every approval carries a tx_hash except a chia send the wallet reported no id for
+                        if response.status == "approved" and (response.tx_hash or hash_optional):
+                            return response.tx_hash or None
                         elif response.status == "rejected":
                             raise TxRejectedError(request_id)
                         elif response.error:

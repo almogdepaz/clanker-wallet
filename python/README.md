@@ -109,9 +109,9 @@ tx_hash = await agent.request_tx(RequestTxOptions(
 ))
 ```
 
-#### `async request_transfer(options: RequestTransferOptions) -> str`
+#### `async request_transfer(options: RequestTransferOptions) -> str | None`
 
-Send bitcoin or chia through a bitcoin or chia pairing: the human's wallet builds, signs and broadcasts the transaction. Returns the bitcoin txid or chia transaction id on approval; rejection, timeout and relay errors raise as for `request_tx()`.
+Send bitcoin or chia through a bitcoin or chia pairing: the human's wallet builds, signs and broadcasts the transaction. Returns the bitcoin txid or chia transaction id on approval, or `None` for a chia send the wallet reported no id for (Sage; check the recipient's balance); rejection, timeout and relay errors raise as for `request_tx()`.
 
 Raises `InvalidTxError` before anything is sent for an evm pairing, an unknown `chain_network`, a recipient from another network (bitcoin: segwit `bc1...`/`tb1...` only), a non-integer amount, or a bitcoin `fee` (bitcoin wallets set their own).
 

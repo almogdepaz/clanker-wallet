@@ -141,16 +141,20 @@ export class ClankerWallet extends TypedEmitter {
       ? { from: humanWallet || '', to: transaction.to, value: transaction.value, data: transaction.data, chainId: chain_id }
       : undefined
 
-    return this.send(txRequest, options, simulate)
+    const txHash = await this.send(txRequest, options, simulate)
+    // unreachable: send() lets only a chia approval through without a hash
+    if (txHash === undefined) throw new Error(`request ${txRequest.request_id}: approved without a tx hash`)
+    return txHash
   }
 
   /**
    * send a bitcoin / chia transfer to the paired human and wait for their response.
    * the family comes from the pairing; the human's wallet builds, signs and broadcasts
-   * the send. resolves with the txid on approval.
+   * the send. resolves with the txid on approval, or with undefined for a chia send the wallet
+   * reported no id for (Sage's chia_send): it was sent, and the recipient's balance shows it.
    * throws InvalidTxError (before anything is sent), or on rejection, timeout, or connection error.
    */
-  async requestTransfer(options: RequestTransferOptions): Promise<string> {
+  async requestTransfer(options: RequestTransferOptions): Promise<string | undefined> {
     if (!this.pairing) {
       throw new Error('not paired — call pair() first')
     }
@@ -184,13 +188,16 @@ export class ClankerWallet extends TypedEmitter {
     request: TxRequest | TransferRequest,
     options: Pick<RequestTxOptions, 'timeout_ms' | 'join_timeout_ms' | 'signal'>,
     simulate?: Record<string, unknown>,
-  ): Promise<string> {
+  ): Promise<string | undefined> {
     const { humanPubkey, humanPubkeyHex, relayUrl } = this.pairing!
     const requestId = request.request_id
     const timeoutMs = options.timeout_ms ?? DEFAULT_TIMEOUT_MS
     const { join_timeout_ms: joinTimeoutMs, signal } = options
 
-    return new Promise<string>((resolve, reject) => {
+    // a chia wallet can send without reporting an id (Sage's chia_send answers {}); every other approval carries one
+    const hashOptional = 'chain_family' in request && request.chain_family === 'chia'
+
+    return new Promise<string | undefined>((resolve, reject) => {
       let ws: WebSocket
       let timer: ReturnType<typeof setTimeout>
       let joinTimer: ReturnType<typeof setTimeout> | undefined
@@ -312,8 +319,8 @@ export class ClankerWallet extends TypedEmitter {
 
             cleanup()
 
-            if (response.status === 'approved' && response.tx_hash) {
-              resolve(response.tx_hash)
+            if (response.status === 'approved' && (response.tx_hash || hashOptional)) {
+              resolve(response.tx_hash || undefined)
             } else if (response.status === 'rejected') {
               reject(new Error(`request ${requestId} rejected by human`))
             } else if (response.error) {

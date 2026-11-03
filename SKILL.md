@@ -132,7 +132,7 @@ clanker-wallet send --xch testnet11 --to txch1qqqsyqcyq5rqwzqfpg9scrgwpugpzysnzs
 - **bitcoin recipients are segwit addresses only** (`bc1q...`, `bc1p...`, `tb1...`); legacy `1...`/`3...` addresses are refused.
 - **amounts are whole base units**: `--sats` (1 BTC = `100000000`), `--mojos` (1 XCH = `1000000000000`). No decimals.
 - **fees:** bitcoin fees are set in the human's wallet. Chia takes `--fee-mojos` (default `0`), which the human sees before approving.
-- `--reason`, `--urgency`, `--expected-outcome` and `--timeout` work as for `tx`, and so do the output and exit codes. On approval `tx_hash` is the bitcoin txid or the chia transaction id. Exit code 4 means that chain family isn't paired.
+- `--reason`, `--urgency`, `--expected-outcome` and `--timeout` work as for `tx`, and so do the output and exit codes. On approval `tx_hash` is the bitcoin txid or the chia transaction id. A chia approval may have no `tx_hash` (`{"status":"approved"}`): the Sage wallet sends without reporting a transaction id, so check the recipient's balance. Exit code 4 means that chain family isn't paired.
 
 ## Common Chain IDs
 

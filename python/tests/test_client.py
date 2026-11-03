@@ -32,6 +32,7 @@ from clanker_wallet.errors import (
     NotPairedError,
     PairingError,
     RelayError,
+    TxError,
     TxRejectedError,
     TxTimeoutError,
 )
@@ -916,6 +917,32 @@ class TestWire:
             await agent.request_transfer(RequestTransferOptions(chain_network=network, transfer=transfer, timeout_ms=2000))
         assert exc.value.field == field
         assert log == []
+
+    async def _approved_without_hash(self, relay_url: str, family: str, network: str, transfer: Transfer) -> Optional[str]:
+        """Pair with `family`, request `transfer`, and have the human approve it with no tx_hash."""
+        human_kp = generate_keypair()
+
+        def respond(req: Dict[str, Any], _agent_pub: str) -> Dict[str, Any]:
+            return {"request_id": req["request_id"], "status": "approved"}
+
+        ws, _received, listener_task = await simulate_human(human_kp, relay_url, respond)
+        try:
+            agent = ClankerWallet()
+            agent.pair(json.dumps({"version": 1, "pubkey": to_hex(human_kp.public_key), "relay": relay_url, "chain_family": family}))
+            return await agent.request_transfer(RequestTransferOptions(chain_network=network, transfer=transfer, timeout_ms=10000))
+        finally:
+            listener_task.cancel()
+            await ws.close()
+
+    async def test_chia_approval_without_tx_hash_returns_none(self, logging_relay: Tuple[str, List[Dict[str, Any]]]) -> None:
+        # Sage's chia_send reports no transaction id
+        relay_url, _log = logging_relay
+        assert await self._approved_without_hash(relay_url, "chia", "testnet11", Transfer(asset="xch", to=TXCH, amount=5)) is None
+
+    async def test_bitcoin_approval_without_tx_hash_is_still_a_failure(self, logging_relay: Tuple[str, List[Dict[str, Any]]]) -> None:
+        relay_url, _log = logging_relay
+        with pytest.raises(TxError, match='unexpected response status "approved"'):
+            await self._approved_without_hash(relay_url, "bitcoin", "testnet", Transfer(asset="btc", to=BTC_TEST, amount="1000"))
 
     async def test_transfer_needs_pairing(self) -> None:
         with pytest.raises(NotPairedError):

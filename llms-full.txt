@@ -59,7 +59,7 @@ Request a transaction. Blocks until approved, rejected, or timeout (default 1 h;
 | `--timeout <ms>` | no | `3600000` (1 h) | How long `tx` blocks waiting for the human |
 
 ### `clanker-wallet send [flags]`
-Send bitcoin or chia through a pairing from the web app's bitcoin or chia tab. Same blocking, output and exit codes as `tx`; exit code 4 means that chain family isn't paired. On approval `tx_hash` is the bitcoin txid or the chia transaction id.
+Send bitcoin or chia through a pairing from the web app's bitcoin or chia tab. Same blocking, output and exit codes as `tx`; exit code 4 means that chain family isn't paired. On approval `tx_hash` is the bitcoin txid or the chia transaction id. A chia approval may have no `tx_hash` (`{"status":"approved"}`): the Sage wallet sends without reporting a transaction id, so check the recipient's balance.
 
 ```bash
 clanker-wallet send --btc testnet --to tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx --sats 1000 --reason "Send 1000 sats on bitcoin testnet"
@@ -162,7 +162,7 @@ const txId = await wallet.requestTransfer({
 })
 ```
 
-`requestTransfer` throws `InvalidTxError` before sending for an evm pairing, an unknown network, a recipient from another network, a non-integer amount, or a bitcoin `fee` (bitcoin wallets set their own). Chia `fee` defaults to `"0"`.
+`requestTransfer` throws `InvalidTxError` before sending for an evm pairing, an unknown network, a recipient from another network, a non-integer amount, or a bitcoin `fee` (bitcoin wallets set their own). Chia `fee` defaults to `"0"`. It returns `undefined` for a chia send the wallet reported no id for (Sage); check the recipient's balance.
 
 ## Python SDK
 
