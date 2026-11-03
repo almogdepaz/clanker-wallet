@@ -88,6 +88,8 @@ clanker-wallet send --xch testnet11 --to txch1qqqsyqcyq5rqwzqfpg9scrgwpugpzysnzs
 # approved → {"tx_hash":"<bitcoin txid or chia transaction id>","status":"approved"}
 ```
 
+A chia approval may have no `tx_hash` (`{"status":"approved"}`): the Sage wallet sends without reporting a transaction id, so check the recipient's balance.
+
 | Flag | Required | Default | Description |
 |------|----------|---------|-------------|
 | `--btc <network>` | one of `--btc`/`--xch` | — | `mainnet`, `testnet` or `signet` |
@@ -220,7 +222,7 @@ const txId = await wallet.requestTransfer({
 })
 ```
 
-It throws `InvalidTxError` before sending for an evm pairing, an unknown network, a recipient from another network, a non-integer amount, or a bitcoin `fee` (the wallet sets bitcoin fees). Chia `fee` defaults to `"0"`.
+It throws `InvalidTxError` before sending for an evm pairing, an unknown network, a recipient from another network, a non-integer amount, or a bitcoin `fee` (the wallet sets bitcoin fees). Chia `fee` defaults to `"0"`. It returns `undefined` for a chia send the wallet reported no id for (Sage); check the recipient's balance.
 
 See full API: [`src/`](./src/)
 
