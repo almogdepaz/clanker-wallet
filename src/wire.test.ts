@@ -29,8 +29,12 @@ function freeze(): void {
   vi.spyOn(Math, 'random').mockReturnValue(0.123456789)
 }
 
-/** join the human's room, approve the first request, return its plaintext and relay frame */
-async function capture(send: (agent: ClankerWallet) => Promise<string>, pairing: Record<string, unknown>) {
+/** join the human's room, answer the first request with `answer` (approved with a hash by default), return its plaintext and relay frame */
+async function capture(
+  send: (agent: ClankerWallet) => Promise<string | undefined>,
+  pairing: Record<string, unknown>,
+  answer: Record<string, unknown> = { status: 'approved', tx_hash: '0xabc' },
+) {
   const ws = new WebSocket(relay.url)
   await new Promise((resolve) => ws.addEventListener('open', resolve, { once: true }))
   ws.send(JSON.stringify({ type: 'join', room: HUMAN_HEX }))
@@ -45,7 +49,7 @@ async function capture(send: (agent: ClankerWallet) => Promise<string>, pairing:
       const { request_id } = JSON.parse(plaintext)
       const reply: AgentEnvelope = {
         sender_pubkey: HUMAN_HEX,
-        ciphertext: encryptMessage(JSON.stringify({ request_id, status: 'approved', tx_hash: '0xabc' }), fromHex(envelope.sender_pubkey), HUMAN.secretKey),
+        ciphertext: encryptMessage(JSON.stringify({ request_id, ...answer }), fromHex(envelope.sender_pubkey), HUMAN.secretKey),
       }
       ws.send(JSON.stringify({ type: 'message', room: HUMAN_HEX, payload: JSON.stringify(reply) }))
       resolve({ frame, plaintext })
@@ -54,9 +58,14 @@ async function capture(send: (agent: ClankerWallet) => Promise<string>, pairing:
 
   const agent = new ClankerWallet({ secretKey: AGENT_SECRET })
   agent.pair(JSON.stringify({ version: 1, pubkey: HUMAN_HEX, relay: relay.url, ...pairing }))
-  const result = await send(agent)
+  let result: string | undefined
+  try {
+    result = await send(agent)
+  } finally {
+    // a failed request must not leave the human listening to later tests' frames in the same room
+    ws.close()
+  }
   const { frame, plaintext } = await seen
-  ws.close()
   // the agent's frame, not the human's reply
   const sent = relay.received.filter((m) => m.type === 'message' && m.room === HUMAN_HEX && JSON.parse(m.payload).sender_pubkey !== HUMAN_HEX).at(-1)
   const envelope = JSON.parse(sent.payload)
@@ -156,6 +165,29 @@ describe('transfer request wire format', () => {
     const req = JSON.parse(plaintext)
     expect(req.transfer).toEqual({ asset: 'btc', to: BTC_TEST, amount: '1000' })
     expect(Object.keys(req)).toEqual(['request_id', 'agent_id', 'timestamp', 'chain_family', 'chain_network', 'transfer', 'signature'])
+  })
+
+  // Sage's chia_send sends and reports no transaction id: the approval comes without tx_hash
+  test('chia: an approval without tx_hash resolves with no hash', async () => {
+    const { result } = await capture((agent) => agent.requestTransfer({
+      chain_network: 'testnet11',
+      transfer: { asset: 'xch', to: TXCH, amount: '1' },
+      timeout_ms: 10_000,
+    }), { wallet: 'xch1wallet', chain_family: 'chia' }, { status: 'approved' })
+    expect(result).toBeUndefined()
+  })
+
+  test('bitcoin and evm: an approval without tx_hash is still a failure', async () => {
+    await expect(capture((agent) => agent.requestTransfer({
+      chain_network: 'testnet',
+      transfer: { asset: 'btc', to: BTC_TEST, amount: '1000' },
+      timeout_ms: 10_000,
+    }), { wallet: 'tb1wallet', chain_family: 'bitcoin' }, { status: 'approved' })).rejects.toThrow('unexpected response status "approved"')
+    await expect(capture((agent) => agent.requestTx({
+      chain_id: 84532,
+      transaction: { to: TO, value: 5n, data: '0x' },
+      timeout_ms: 10_000,
+    }), { wallet: WALLET }, { status: 'approved' })).rejects.toThrow('unexpected response status "approved"')
   })
 
   test.each([

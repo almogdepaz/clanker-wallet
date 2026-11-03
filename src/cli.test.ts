@@ -279,11 +279,12 @@ describe('cli pairings per family', () => {
     expect(req.transaction).toBeUndefined()
   })
 
-  it('send --btc prints the txid on approval (exit 0)', async () => {
+  /** pair `family`, run `send` with `args`, and answer it as the human with `answer`; returns the exit code and stdout */
+  async function sendAnswered(family: 'bitcoin' | 'chia', args: string[], answer: Record<string, unknown>) {
     const home = mkdtempSync(join(tmpdir(), 'clanker-cli-'))
     const human = nacl.box.keyPair()
     const room = toHex(human.publicKey)
-    runCli(home, 'pair', pairingJson(room, { wallet: 'tb1me', chain_family: 'bitcoin' }))
+    runCli(home, 'pair', pairingJson(room, { wallet: family === 'bitcoin' ? 'tb1me' : 'txch1me', chain_family: family }))
 
     const ws = new WebSocket(relay.url)
     await new Promise((resolve) => ws.addEventListener('open', resolve, { once: true }))
@@ -294,7 +295,7 @@ describe('cli pairings per family', () => {
       const envelope = JSON.parse(frame.payload)
       if (envelope.sender_pubkey === room) return
       const req = JSON.parse(decryptMessage(envelope.ciphertext, fromHex(envelope.sender_pubkey), human.secretKey)!)
-      const reply = { request_id: req.request_id, status: 'approved', tx_hash: 'ab'.repeat(32) }
+      const reply = { request_id: req.request_id, ...answer }
       ws.send(JSON.stringify({
         type: 'message',
         room,
@@ -303,16 +304,27 @@ describe('cli pairings per family', () => {
     })
 
     try {
-      const child = spawn(process.execPath, [CLI, 'send', '--btc', 'testnet', '--to', BTC_TEST, '--sats', '1000', '--timeout', '10000'],
-        { env: { ...process.env, HOME: home } })
+      const child = spawn(process.execPath, [CLI, 'send', ...args, '--timeout', '10000'], { env: { ...process.env, HOME: home } })
       let stdout = ''
       child.stdout.on('data', (d) => { stdout += d })
       const code = await new Promise((resolve) => child.on('exit', resolve))
-      expect(code).toBe(0)
-      expect(JSON.parse(stdout)).toEqual({ tx_hash: 'ab'.repeat(32), status: 'approved' })
+      return { code, stdout }
     } finally {
       ws.close()
     }
+  }
+
+  it('send --btc prints the txid on approval (exit 0)', async () => {
+    const { code, stdout } = await sendAnswered('bitcoin', ['--btc', 'testnet', '--to', BTC_TEST, '--sats', '1000'], { status: 'approved', tx_hash: 'ab'.repeat(32) })
+    expect(code).toBe(0)
+    expect(JSON.parse(stdout)).toEqual({ tx_hash: 'ab'.repeat(32), status: 'approved' })
+  })
+
+  // Sage's chia_send reports no transaction id
+  it('send --xch approved without a transaction id prints no tx_hash (exit 0)', async () => {
+    const { code, stdout } = await sendAnswered('chia', ['--xch', 'testnet11', '--to', TXCH, '--mojos', '1000'], { status: 'approved' })
+    expect(code).toBe(0)
+    expect(JSON.parse(stdout)).toEqual({ status: 'approved' })
   })
 
   it('send exits 4 when that family is not paired', () => {

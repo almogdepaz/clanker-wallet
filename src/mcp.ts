@@ -232,7 +232,7 @@ export function createMcpServer(options: McpServerOptions): { handleLine: (line:
    * the wallet sends it, or a tool error when it fails first (bad input, `from` not the paired wallet, unreachable relay,
    * join timeout, cancelled)
    */
-  function submit(family: RequestFamily, from: string | undefined, cancelled: AbortSignal, send: (wallet: ClankerWallet, limits: WalletLimits) => Promise<string>): Promise<ToolResult> {
+  function submit(family: RequestFamily, from: string | undefined, cancelled: AbortSignal, send: (wallet: ClankerWallet, limits: WalletLimits) => Promise<string | undefined>): Promise<ToolResult> {
     const pairing = options.loadPairing(family)
     if (!pairing) return Promise.resolve(toolError(NOT_PAIRED[family]))
     const mismatch = fromMismatch(family, from, pairing)
