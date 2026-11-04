@@ -7,6 +7,8 @@ import { joinAsHuman, startTestRelay, type TestHuman, type TestRelay } from './t
 
 const TO = '0x2222222222222222222222222222222222222222'
 const BTC_TEST = 'tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx'
+const TXCH = 'txch1qqqsyqcyq5rqwzqfpg9scrgwpugpzysnzs23v9ccrydpk8qarc0sw0amhg'
+const XCH = 'xch1qqqsyqcyq5rqwzqfpg9scrgwpugpzysnzs23v9ccrydpk8qarc0srg6dkm'
 const TX_HASH = '0x' + 'ab'.repeat(32)
 
 let relay: TestRelay
@@ -25,6 +27,8 @@ async function human(respond?: Parameters<typeof joinAsHuman>[1]) {
 }
 
 const approve = (req: any) => ({ request_id: req.request_id, status: 'approved', tx_hash: TX_HASH })
+/** Sage's chia_send reports no transaction id */
+const approveWithoutHash = (req: any) => ({ request_id: req.request_id, status: 'approved' })
 
 interface ServerOptions {
   requestTtlMs?: number
@@ -68,9 +72,12 @@ const evmPairing = (room: string, extra: Partial<SavedPairing> = {}): SavedPairi
   ({ pubkey: room, relay: relay.url, wallet: '0x1111111111111111111111111111111111111111', mode: null, ...extra })
 const btcPairing = (room: string, extra: Partial<SavedPairing> = {}): SavedPairing =>
   ({ pubkey: room, relay: relay.url, wallet: 'tb1me', mode: null, chain_family: 'bitcoin', ...extra })
+const chiaPairing = (room: string, extra: Partial<SavedPairing> = {}): SavedPairing =>
+  ({ pubkey: room, relay: relay.url, wallet: 'txch1me', mode: null, chain_family: 'chia', ...extra })
 
 const evmArgs = { chain_id: 84532, to: TO, value: '1000', reason: 'pay the test address', urgency: 'low' }
 const btcArgs = { family: 'bitcoin', network: 'testnet', to: BTC_TEST, amount: '1000', reason: 'pay', expected_outcome: 'paid' }
+const chiaArgs = { family: 'chia', network: 'testnet11', to: TXCH, amount: '1000', reason: 'pay' }
 const sentTo = (room: string) => relay.received.filter((m) => m.type === 'message' && m.room === room)
 
 describe('mcp protocol', () => {
@@ -129,6 +136,7 @@ describe('mcp protocol', () => {
     }
     expect(byName.request_evm_tx.description).toContain('wei')
     expect(byName.request_transfer.description).toContain('sats')
+    expect(byName.request_transfer.description).toContain('mojos')
     for (const status of REQUEST_STATUSES) expect(byName.get_request.description).toContain(status)
     expect(byName.get_request.inputSchema.properties.wait_seconds.maximum).toBe(MAX_WAIT_SECONDS)
     expect(MAX_WAIT_SECONDS).toBeLessThanOrEqual(50)
@@ -351,7 +359,8 @@ describe('request_transfer', () => {
   })
 
   it.each([
-    ['chia', { ...btcArgs, family: 'chia' }, 'family', {}],
+    ['an unknown family', { ...btcArgs, family: 'litecoin' }, 'family', {}],
+    ['a fee (the wallet sets it)', { ...btcArgs, fee: '10' }, 'fee', {}],
     ['a mainnet address on testnet', { ...btcArgs, to: 'bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4' }, 'to', {}],
     ['a decimal amount', { ...btcArgs, amount: '0.5' }, 'amount', {}],
     ['regtest', { ...btcArgs, network: 'regtest' }, 'network', {}],
@@ -400,6 +409,63 @@ describe('request_transfer', () => {
     const res = await call('request_transfer', btcArgs)
     expect(res.isError).toBe(true)
     expect(res.text).toMatch(/not paired with a bitcoin wallet/)
+    expect(sentTo(h.room)).toEqual([])
+  })
+})
+
+describe('request_transfer: chia', () => {
+  it('sends the same signed transfer as send --xch and reports the tx hash', async () => {
+    const h = await human(approve)
+    const { call } = server({ chia: chiaPairing(h.room) })
+    const { request_id } = (await call('request_transfer', { ...chiaArgs, fee: '50' })).body
+    expect((await call('get_request', { request_id, wait_seconds: 5 })).body).toEqual({ request_id, status: 'approved', tx_hash: TX_HASH })
+    expect(h.requests[0]).toMatchObject({
+      request_id,
+      chain_family: 'chia',
+      chain_network: 'testnet11',
+      transfer: { asset: 'xch', to: TXCH, amount: '1000', fee: '50' },
+      context: { reason: 'pay' },
+    })
+  })
+
+  it('reports approved without a tx hash when the wallet sent without one (Sage)', async () => {
+    const h = await human(approveWithoutHash)
+    const { call } = server({ chia: chiaPairing(h.room) })
+    const { request_id } = (await call('request_transfer', chiaArgs)).body
+    expect((await call('get_request', { request_id, wait_seconds: 5 })).body).toEqual({ request_id, status: 'approved' })
+    expect(h.requests[0].transfer.fee).toBe('0')
+  })
+
+  it('still fails a bitcoin approval without a tx hash', async () => {
+    const h = await human(approveWithoutHash)
+    const { call } = server({ bitcoin: btcPairing(h.room) })
+    const { request_id } = (await call('request_transfer', btcArgs)).body
+    const { body } = await call('get_request', { request_id, wait_seconds: 5 })
+    expect(body.status).toBe('failed')
+    expect(body.tx_hash).toBeUndefined()
+  })
+
+  it.each([
+    ['a mainnet address on testnet11', { ...chiaArgs, to: XCH }, 'to', {}],
+    ['a bitcoin network', { ...chiaArgs, network: 'testnet' }, 'network', {}],
+    ['a decimal fee', { ...chiaArgs, fee: '0.5' }, 'fee', {}],
+    ['another network than the pairing', chiaArgs, 'network', { chain_network: 'mainnet' }],
+  ])('refuses %s as a tool error and sends nothing', async (_name, args, field, pairingExtra) => {
+    const h = await human()
+    const { call } = server({ chia: chiaPairing(h.room, pairingExtra) })
+    const res = await call('request_transfer', args)
+    expect(res.isError).toBe(true)
+    expect(res.text).toContain(field)
+    expect(sentTo(h.room)).toEqual([])
+  })
+
+  it('refuses when no chia wallet is paired, pointing at the XCH tab', async () => {
+    const h = await human()
+    const { call } = server({ bitcoin: btcPairing(h.room) })
+    const res = await call('request_transfer', chiaArgs)
+    expect(res.isError).toBe(true)
+    expect(res.text).toMatch(/not paired with a chia wallet/)
+    expect(res.text).toMatch(/XCH tab/)
     expect(sentTo(h.room)).toEqual([])
   })
 })
@@ -554,7 +620,7 @@ describe('expiry', () => {
 })
 
 describe('list_pairings', () => {
-  it('lists the evm and bitcoin pairings with the agent fingerprint, not chia', async () => {
+  it('lists the evm, bitcoin and chia pairings with the agent fingerprint', async () => {
     const { call } = server({
       evm: evmPairing('aa', { mode: 'managed' }),
       bitcoin: btcPairing('bb', { chain_network: 'testnet' }),
@@ -566,6 +632,7 @@ describe('list_pairings', () => {
     expect(body.pairings).toEqual([
       { family: 'evm', network: null, wallet: '0x1111111111111111111111111111111111111111', mode: 'managed' },
       { family: 'bitcoin', network: 'testnet', wallet: 'tb1me', mode: null },
+      { family: 'chia', network: null, wallet: 'xch1me', mode: null },
     ])
   })
 

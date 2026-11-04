@@ -30,9 +30,9 @@ export interface SavedPairing {
   chain_network?: string
 }
 
-/** the families the tools request on; chia waits until the web app shows it again */
-type RequestFamily = 'evm' | 'bitcoin'
-const REQUEST_FAMILIES: RequestFamily[] = ['evm', 'bitcoin']
+/** the families the tools request on */
+type RequestFamily = 'evm' | 'bitcoin' | 'chia'
+const REQUEST_FAMILIES: RequestFamily[] = ['evm', 'bitcoin', 'chia']
 
 export interface McpServerOptions {
   /** the package version, reported in initialize */
@@ -58,7 +58,7 @@ const CONTEXT_PROPERTIES = {
 
 /** the same on both request tools; the hosted connector copies these definitions verbatim */
 const FROM_PROPERTY = {
-  from: { type: 'string', description: 'the paired wallet address to send from, as list_pairings shows it; needed only when several wallets of the same family (evm or bitcoin) are paired' },
+  from: { type: 'string', description: 'the paired wallet address to send from, as list_pairings shows it; needed only when several wallets of the same family (evm, bitcoin or chia) are paired' },
 }
 
 /**
@@ -92,17 +92,23 @@ export const MCP_TOOLS = [
   },
   {
     name: 'request_transfer',
-    description: 'Ask the human to send bitcoin from their own wallet, which builds, signs and broadcasts it. ' +
+    description: 'Ask the human to send bitcoin or chia (XCH) from their own wallet, which builds, signs and broadcasts it. ' +
       'Nothing is signed here: the human approves every request on their own device, or rejects it. ' +
       'Returns { request_id } once the request is delivered; then call get_request for the outcome. ' +
-      'amount is an integer string in sats (1 BTC = "100000000"), no decimals; the wallet sets the fee.',
+      'amount is an integer string, no decimals: sats for bitcoin (1 BTC = "100000000"), where the wallet sets the fee; ' +
+      'mojos for chia (1 XCH = "1000000000000"), with an optional fee in mojos (default "0").',
     inputSchema: {
       type: 'object',
       properties: {
-        family: { type: 'string', enum: ['bitcoin'], description: 'chain family' },
-        network: { type: 'string', enum: ['mainnet', 'testnet', 'signet'], description: 'must match the paired wallet (see list_pairings)' },
-        to: { type: 'string', description: 'segwit address on that network: bc1... on mainnet, tb1... on testnet and signet' },
-        amount: { type: 'string', description: 'integer string in sats' },
+        family: { type: 'string', enum: ['bitcoin', 'chia'], description: 'chain family' },
+        network: {
+          type: 'string',
+          enum: ['mainnet', 'testnet', 'signet', 'testnet11'],
+          description: 'bitcoin: mainnet, testnet or signet; chia: mainnet or testnet11. must match the paired wallet (see list_pairings)',
+        },
+        to: { type: 'string', description: 'address on that network: bitcoin segwit bc1... (mainnet) or tb1... (testnet, signet); chia xch1... (mainnet) or txch1... (testnet11)' },
+        amount: { type: 'string', description: 'integer string in sats (bitcoin) or mojos (chia)' },
+        fee: { type: 'string', description: 'chia only: integer string in mojos, default "0"; bitcoin takes none (the wallet sets it)' },
         ...CONTEXT_PROPERTIES,
         ...FROM_PROPERTY,
       },
@@ -112,7 +118,7 @@ export const MCP_TOOLS = [
   },
   {
     name: 'get_request',
-    description: 'Get the outcome of a request: pending, approved (with tx_hash), rejected, failed (with error), unknown (with error) or expired. ' +
+    description: 'Get the outcome of a request: pending, approved (with tx_hash; a chia send may have none, so check the recipient\'s balance), rejected, failed (with error), unknown (with error) or expired. ' +
       `The human may take minutes to answer: pass wait_seconds (at most ${MAX_WAIT_SECONDS}) to wait for it, and call again while it is pending. ` +
       'unknown means the request was delivered but this server lost its relay connection: the human may still approve it, so ask them before sending it again. ' +
       'expired means this server stopped waiting, 1 hour after sending; after a restart it no longer knows earlier request ids. ' +
@@ -218,6 +224,7 @@ function fromMismatch(family: RequestFamily, from: string | undefined, pairing: 
 const NOT_PAIRED: Record<RequestFamily, string> = {
   evm: 'not paired with an evm wallet: ask the human to open https://clanker-wallet.xyz, copy the pairing JSON, and run: clanker-wallet pair \'<JSON>\'',
   bitcoin: 'not paired with a bitcoin wallet: ask the human to open the bitcoin tab at https://clanker-wallet.xyz, copy its pairing JSON, and run: clanker-wallet pair \'<JSON>\'',
+  chia: 'not paired with a chia wallet: ask the human to open the XCH tab at https://clanker-wallet.xyz, copy its pairing JSON, and run: clanker-wallet pair \'<JSON>\'',
 }
 
 export function createMcpServer(options: McpServerOptions): { handleLine: (line: string) => Promise<string | null> } {
@@ -286,19 +293,21 @@ export function createMcpServer(options: McpServerOptions): { handleLine: (line:
   }
 
   async function requestTransfer(args: Record<string, unknown>, cancelled: AbortSignal): Promise<ToolResult> {
-    if (args.family !== 'bitcoin') throw new ToolInputError(`invalid family: must be "bitcoin", got ${JSON.stringify(args.family)}`)
+    const family = args.family
+    if (family !== 'bitcoin' && family !== 'chia') throw new ToolInputError(`invalid family: must be "bitcoin" or "chia", got ${JSON.stringify(family)}`)
     const context = contextFrom(args)
     const from = fromArg(args)
     let request: ReturnType<typeof validateTransfer>
     try {
-      request = validateTransfer('bitcoin', args.network, { asset: 'btc', to: args.to, amount: args.amount })
+      const asset = family === 'bitcoin' ? 'btc' : 'xch'
+      request = validateTransfer(family, args.network, { asset, to: args.to, amount: args.amount, ...(args.fee !== undefined && { fee: args.fee }) })
     } catch (err) {
       // the tool calls the network field `network`
       if (err instanceof InvalidTxError && err.field === 'chain_network') throw new ToolInputError(`invalid network: ${err.reason}`)
       throw err
     }
     const { chain_network, transfer } = request
-    return submit('bitcoin', from, cancelled, async (wallet, limits) => {
+    return submit(family, from, cancelled, async (wallet, limits) => {
       try {
         return await wallet.requestTransfer({ chain_network, transfer, context, ...limits })
       } catch (err) {
