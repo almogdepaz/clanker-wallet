@@ -37,6 +37,8 @@ const REQUEST_FAMILIES: RequestFamily[] = ['evm', 'bitcoin', 'chia']
 export interface McpServerOptions {
   /** the package version, reported in initialize */
   version: string
+  /** review app origin (or CLANKER_WALLET_WEB_ORIGIN; default https://clanker-wallet.xyz) */
+  webOrigin?: string
   identity: { agent_id: string; fingerprint: string }
   /** the saved pairing for a family, or null when that family isn't paired */
   loadPairing: (family: RequestFamily) => SavedPairing | null
@@ -74,7 +76,7 @@ export const MCP_TOOLS = [
     name: 'request_evm_tx',
     description: 'Ask the human to send an EVM transaction (ETH or a contract call) from their own wallet. ' +
       'Nothing is signed here: the human approves every request on their own device, or rejects it. ' +
-      'Returns { request_id } once the request is delivered; then call get_request for the outcome. ' +
+      'Returns { request_id, review_url } once delivered; show review_url to the user, then call get_request for the outcome. ' +
       'value is an integer string in wei (1 ETH = "1000000000000000000"), no decimals.',
     inputSchema: {
       type: 'object',
@@ -94,7 +96,7 @@ export const MCP_TOOLS = [
     name: 'request_transfer',
     description: 'Ask the human to send bitcoin or chia (XCH) from their own wallet, which builds, signs and broadcasts it. ' +
       'Nothing is signed here: the human approves every request on their own device, or rejects it. ' +
-      'Returns { request_id } once the request is delivered; then call get_request for the outcome. ' +
+      'Returns { request_id, review_url } once delivered; show review_url to the user, then call get_request for the outcome. ' +
       'amount is an integer string, no decimals: sats for bitcoin (1 BTC = "100000000"), where the wallet sets the fee; ' +
       'mojos for chia (1 XCH = "1000000000000"), with an optional fee in mojos (default "0").',
     inputSchema: {
@@ -228,6 +230,8 @@ const NOT_PAIRED: Record<RequestFamily, string> = {
 }
 
 export function createMcpServer(options: McpServerOptions): { handleLine: (line: string) => Promise<string | null> } {
+  const webOrigin = new URL(options.webOrigin ?? process.env.CLANKER_WALLET_WEB_ORIGIN ?? 'https://clanker-wallet.xyz').origin
+  const reviewUrl = (id: string) => `${webOrigin}/?request=${encodeURIComponent(id)}`
   const ttl = options.requestTtlMs ?? DEFAULT_REQUEST_TTL_MS
   const joinTimeout = options.joinTimeoutMs ?? DEFAULT_JOIN_TIMEOUT_MS
   const records = new Map<string, RequestRecord>()
@@ -261,7 +265,7 @@ export function createMcpServer(options: McpServerOptions): { handleLine: (line:
         record = newRecord(request_id, expiresAt)
         records.set(request_id, record)
         record.settled.then(() => clearTimeout(expiry))
-        resolve(toolResult({ request_id, status: 'pending', expires_at: new Date(expiresAt).toISOString() }))
+        resolve(toolResult({ request_id, review_url: reviewUrl(request_id), status: 'pending', expires_at: new Date(expiresAt).toISOString() }))
       })
       wallet.on('response', (response) => { answered = response })
 
@@ -343,7 +347,7 @@ export function createMcpServer(options: McpServerOptions): { handleLine: (line:
     if (record.status === 'pending' && Date.now() >= record.expiresAt) record.settle('expired')
 
     const { status, tx_hash, error } = record
-    if (status === 'pending') return toolResult({ request_id, status, expires_at: new Date(record.expiresAt).toISOString() })
+    if (status === 'pending') return toolResult({ request_id, review_url: reviewUrl(request_id), status, expires_at: new Date(record.expiresAt).toISOString() })
     return toolResult({ request_id, status, ...(tx_hash !== undefined && { tx_hash }), ...(error !== undefined && { error }) })
   }
 

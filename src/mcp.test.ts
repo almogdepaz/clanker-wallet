@@ -31,6 +31,7 @@ const approve = (req: any) => ({ request_id: req.request_id, status: 'approved',
 const approveWithoutHash = (req: any) => ({ request_id: req.request_id, status: 'approved' })
 
 interface ServerOptions {
+  webOrigin?: string
   requestTtlMs?: number
   joinTimeoutMs?: number
   /** sees each per-request wallet before the server uses it */
@@ -38,10 +39,11 @@ interface ServerOptions {
 }
 
 /** an mcp server for one agent identity, paired per family as given (the cli wires its own pairing files the same way) */
-function server(pairings: Partial<Record<string, SavedPairing>>, { requestTtlMs, joinTimeoutMs, onWallet }: ServerOptions = {}) {
+function server(pairings: Partial<Record<string, SavedPairing>>, { requestTtlMs, joinTimeoutMs, onWallet, webOrigin }: ServerOptions = {}) {
   const secretKey = new Uint8Array(randomBytes(32))
   const identity = new ClankerWallet({ secretKey })
   const mcp = createMcpServer({
+    webOrigin,
     version: '9.9.9',
     identity: { agent_id: identity.agentId, fingerprint: toHex(identity.publicKey).slice(0, 16) },
     loadPairing: (family) => pairings[family] ?? null,
@@ -170,6 +172,18 @@ describe('mcp protocol', () => {
 })
 
 describe('request_evm_tx + get_request', () => {
+  it.each([undefined, 'https://review.example'])('returns a safe review_url for sends and pending polls (%s)', async (webOrigin) => {
+    const h = await human()
+    const { call } = server({ evm: evmPairing(h.room), bitcoin: btcPairing(h.room) }, { webOrigin, requestTtlMs: 200 })
+    for (const [name, args] of [['request_evm_tx', evmArgs], ['request_transfer', btcArgs]] as const) {
+      const { body } = await call(name, args)
+      const expected = (webOrigin ?? 'https://clanker-wallet.xyz') + '/?request=' + body.request_id
+      expect(body.review_url).toBe(expected)
+      expect((await call('get_request', { request_id: body.request_id })).body.review_url).toBe(expected)
+      expect([...new URL(body.review_url).searchParams.keys()]).toEqual(['request'])
+    }
+  })
+
   it('sends the same signed request as tx and reports approved with the tx hash', async () => {
     const h = await human(approve)
     const { call } = server({ evm: evmPairing(h.room) })
