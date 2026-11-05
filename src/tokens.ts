@@ -136,7 +136,7 @@ export const TOKENS: readonly ListedToken[] = [
   },
   {
     "chain_id": 1,
-    "address": "0x4c36d2919e407f0cc2ee3c993ccf8ac26d9ce64e",
+    "address": "0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0",
     "symbol": "wstETH",
     "decimals": 18,
     "label": "Lido wstETH"

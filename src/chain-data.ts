@@ -94,9 +94,15 @@ function abiSymbol(value: unknown): string {
   return symbol
 }
 
-export function decimalUnits(amount: unknown, decimals: number): string {
+function decimalParts(amount: unknown): [string, string] {
   if (typeof amount !== 'string' || amount.length > 400 || !/^(0|[1-9][0-9]*)(\.[0-9]+)?$/.test(amount)) throw new ChainDataError('invalid amount: use a positive human decimal string, not exponent notation')
   const [whole, fraction = ''] = amount.split('.')
+  if (BigInt(whole + fraction) === 0n) throw new ChainDataError('amount must be positive')
+  return [whole, fraction]
+}
+
+export function decimalUnits(amount: unknown, decimals: number): string {
+  const [whole, fraction] = decimalParts(amount)
   if (fraction.length > decimals) throw new ChainDataError(`amount has more fraction digits than ${decimals}; refusing to round`)
   const raw = BigInt(whole + fraction.padEnd(decimals, '0'))
   if (raw <= 0n || raw >= 2n ** 256n) throw new ChainDataError('amount must be positive and fit uint256')
@@ -105,6 +111,7 @@ export function decimalUnits(amount: unknown, decimals: number): string {
 
 export async function buildTokenTransfer(args: { chain_id: unknown; to: unknown; token?: unknown; amount: unknown }, options: ChainDataOptions = {}) {
   const { chain_id, transaction } = validateTx(args.chain_id, { to: args.to, value: '0' })
+  decimalParts(args.amount) // refuse invalid/zero amounts before metadata I/O
   const token = await resolveToken(chain_id, args.token, options)
   const amount = decimalUnits(args.amount, token?.decimals ?? 18)
   return validateTx(chain_id, token ? {

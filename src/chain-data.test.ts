@@ -5,6 +5,16 @@ const ADDRESS = '0x' + '1'.repeat(40)
 const word = (n: bigint) => '0x' + n.toString(16).padStart(64, '0')
 
 describe('chain data trust boundaries', () => {
+  it('resolves wstETH to its independently verified Lido contract, not an old display-only label', async () => {
+    const tx = await buildTokenTransfer({ chain_id: 1, to: ADDRESS, token: 'wstETH', amount: '1' })
+    expect(tx.transaction.to).toBe('0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0')
+  })
+  it.each(['0', '-1', '1e6'])('refuses trivially invalid amounts before unlisted metadata I/O (%s)', async amount => {
+    const fetcher = vi.fn(async () => new Response('{}'))
+    await expect(buildTokenTransfer({ chain_id: 1, to: ADDRESS, token: ADDRESS, amount }, { fetch: fetcher })).rejects.toThrow(/amount/)
+    expect(fetcher).not.toHaveBeenCalled()
+  })
+
   it('covers every configured web chain with keyless defaults', () => {
     expect(Object.keys(DEFAULT_RPC_URLS).map(Number).sort((a, b) => a - b)).toEqual([1, 10, 137, 8453, 42161, 80002, 84532, 421614, 11155111, 11155420])
     for (const url of Object.values(DEFAULT_RPC_URLS)) expect(new URL(url).search).toBe('')
