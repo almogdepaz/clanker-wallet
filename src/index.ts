@@ -1,3 +1,4 @@
+export { getBalance, getTxStatus } from './reads.js'
 export { buildTokenTransfer, resolveToken, rpcUrlsFromJson, evmRpc, ChainDataError, DEFAULT_RPC_URLS } from './chain-data.js'
 export type { ChainDataOptions, TokenMetadata } from './chain-data.js'
 export { ClankerWallet, RelayError } from './client.js'

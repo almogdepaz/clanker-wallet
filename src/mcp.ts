@@ -1,3 +1,4 @@
+import { getBalance, getTxStatus } from './reads.js'
 import { buildTokenTransfer, ChainDataError, rpcUrlsFromJson, type ChainDataOptions } from './chain-data.js'
 import { RelayError, type ClankerWallet } from './client.js'
 import type { TxContext } from './types.js'
@@ -157,6 +158,37 @@ export const MCP_TOOLS = [
     annotations: READ_HINTS,
   },
   {
+    name: 'get_balance',
+    description: 'Read the balance of any address, including a recipient not paired here. EVM native or ERC-20 (listed symbol or contract address), bitcoin confirmed/mempool, or chia unspent coins at the recipient puzzle hash (not the whole wallet; excludes mempool). After a chia send approved without a hash, check the recipient balance; a balance alone does not prove which payment arrived.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        family: { type: 'string', enum: ['evm', 'bitcoin', 'chia'], description: 'chain family' },
+        chain_id: { type: 'integer', description: 'required for EVM' },
+        network: { type: 'string', enum: ['mainnet', 'testnet', 'signet', 'testnet11'], description: 'required for bitcoin or chia; EVM uses chain_id' },
+        address: { type: 'string', description: 'any address on that network, including a recipient' },
+        token: { type: 'string', description: 'EVM only: listed symbol or contract address; omitted/native symbol = native coin' },
+      },
+      required: ['family', 'address'],
+    },
+    annotations: { ...READ_HINTS, openWorldHint: true },
+  },
+  {
+    name: 'get_tx_status',
+    description: 'Read an EVM transaction receipt status and confirmations, or bitcoin confirmations. An EVM missing receipt means pending_or_unknown, not proof of submission. After a chia approval without a hash, use get_balance on the recipient instead.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        family: { type: 'string', enum: ['evm', 'bitcoin'], description: 'chain family' },
+        chain_id: { type: 'integer', description: 'required for EVM' },
+        network: { type: 'string', enum: ['mainnet', 'testnet', 'signet'], description: 'required for bitcoin' },
+        tx_hash: { type: 'string', description: 'EVM 0x + 64 hex digits; bitcoin 64 hex digits' },
+      },
+      required: ['family', 'tx_hash'],
+    },
+    annotations: { ...READ_HINTS, openWorldHint: true },
+  },
+  {
     name: 'list_pairings',
     description: 'List the wallets you can request on (chain family, network, wallet address, mode) and your agent fingerprint, ' +
       'which the human compares in the web app before trusting you.',
@@ -266,6 +298,7 @@ export function createMcpServer(options: McpServerOptions): { handleLine: (line:
    * join timeout, cancelled)
    */
   function submit(family: RequestFamily, from: string | undefined, cancelled: AbortSignal, send: (wallet: ClankerWallet, limits: WalletLimits) => Promise<string | undefined>): Promise<ToolResult> {
+    if (cancelled.aborted) return Promise.resolve(toolError('request cancelled before sending; nothing was sent'))
     const pairing = options.loadPairing(family)
     if (!pairing) return Promise.resolve(toolError(NOT_PAIRED[family]))
     const mismatch = fromMismatch(family, from, pairing)
@@ -393,6 +426,8 @@ export function createMcpServer(options: McpServerOptions): { handleLine: (line:
     request_transfer: requestTransfer,
     request_token_transfer: requestTokenTransfer,
     get_request: getRequest,
+    get_balance: async (args) => toolResult(await getBalance(args, chainOptions)),
+    get_tx_status: async (args) => toolResult(await getTxStatus(args, chainOptions)),
     list_pairings: listPairings,
   }
 

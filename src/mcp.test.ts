@@ -128,9 +128,9 @@ describe('mcp protocol', () => {
     expect(await mcp.handleLine('{"jsonrpc":"2.0","id":9,"result":{}}')).toBeNull()
   })
 
-  it('lists the four tools with object schemas, stating human approval and integer-string amounts', async () => {
+  it('lists the tools with object schemas, stating human approval and integer-string amounts', async () => {
     const { result } = await rpc('tools/list')
-    expect(result.tools.map((t: any) => t.name)).toEqual(['request_evm_tx', 'request_transfer', 'request_token_transfer', 'get_request', 'list_pairings'])
+    expect(result.tools.map((t: any) => t.name)).toEqual(['request_evm_tx', 'request_transfer', 'request_token_transfer', 'get_request', 'get_balance', 'get_tx_status', 'list_pairings'])
     for (const tool of result.tools) expect(tool.inputSchema.type).toBe('object')
     const byName = Object.fromEntries(result.tools.map((t: any) => [t.name, t]))
     for (const name of ['request_evm_tx', 'request_transfer']) {
@@ -168,11 +168,122 @@ describe('mcp protocol', () => {
     const annotations = Object.fromEntries(result.tools.map((t: any) => [t.name, t.annotations]))
     const request = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true }
     const read = { readOnlyHint: true, openWorldHint: false }
-    expect(annotations).toEqual({ request_evm_tx: request, request_transfer: request, request_token_transfer: request, get_request: read, list_pairings: read })
+    expect(annotations).toEqual({ request_evm_tx: request, request_transfer: request, request_token_transfer: request, get_request: read, get_balance: { ...read, openWorldHint: true }, get_tx_status: { ...read, openWorldHint: true }, list_pairings: read })
+  })
+})
+
+describe('chain read tools', () => {
+  it('reads an arbitrary EVM native balance without pairing and preserves exact units', async () => {
+    const fetcher = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ result: '0x6f05b59d3b20000' })))
+    try {
+      const result = await server({}).call('get_balance', { family: 'evm', chain_id: 1, address: TO })
+      expect(result.isError).toBe(false)
+      expect(result.body).toMatchObject({ raw_balance: '500000000000000000', balance: '0.5', decimals: 18, asset: 'ETH' })
+    } finally { fetcher.mockRestore() }
+  })
+
+  it('reads listed ERC-20 balanceOf on the requested chain', async () => {
+    const fetcher = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ result: '0x' + (1250000n).toString(16).padStart(64, '0') })))
+    try {
+      const result = await server({}).call('get_balance', { family: 'evm', chain_id: 84532, address: TO, token: 'USDC' })
+      expect(result.isError).toBe(false)
+      expect(result.body).toMatchObject({ raw_balance: '1250000', balance: '1.25', asset: 'USDC', decimals: 6 })
+      const body = JSON.parse(fetcher.mock.calls[0][1]!.body as string)
+      expect(body.params[0].data).toBe('0x70a08231' + TO.slice(2).toLowerCase().padStart(64, '0'))
+    } finally { fetcher.mockRestore() }
+  })
+
+  it.each(['mainnet', 'testnet', 'signet'])('reads bitcoin confirmed and mempool deltas on %s', async network => {
+    const fetcher = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      chain_stats: { funded_txo_sum: 200000000, spent_txo_sum: 50000000 }, mempool_stats: { funded_txo_sum: 10000000, spent_txo_sum: 20000000 },
+    })))
+    try {
+      const result = await server({}).call('get_balance', { family: 'bitcoin', network, address: network === 'mainnet' ? 'bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4' : BTC_TEST })
+      expect(result.isError).toBe(false)
+      expect(result.body).toMatchObject({ raw_balance: '140000000', balance: '1.4', confirmed_balance: '1.5', unconfirmed_balance: '-0.1' })
+      expect(String(fetcher.mock.calls[0][0])).toContain(network === 'mainnet' ? 'mempool.space/api/' : 'mempool.space/' + network + '/api/')
+    } finally { fetcher.mockRestore() }
+  })
+
+  it.each(['mainnet', 'testnet11'])('decodes a chia recipient and sums unspent uint64 coin records exactly on %s', async network => {
+    const hash = '0x000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f'
+    const fetcher = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(
+      '{"success":true,"coin_records":[{"spent":false,"coin":{"parent_coin_info":"0x' + 'aa'.repeat(32) + '","puzzle_hash":"' + hash + '","amount":18446744073709551615}}]}',
+    ))
+    try {
+      const result = await server({}).call('get_balance', { family: 'chia', network, address: network === 'mainnet' ? XCH : TXCH })
+      expect(result.isError).toBe(false)
+      expect(result.body).toMatchObject({ raw_balance: '18446744073709551615', balance: '18446744.073709551615', asset: 'XCH', decimals: 12 })
+      expect(JSON.parse(fetcher.mock.calls[0][1]!.body as string)).toMatchObject({ puzzle_hash: hash, include_spent_coins: false })
+    } finally { fetcher.mockRestore() }
+  })
+
+  it.each(['0x0', '0x1'])('reads EVM receipt status %s and confirmations', async receiptStatus => {
+    const fetcher = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
+      const { method } = JSON.parse(init!.body as string)
+      return new Response(JSON.stringify({ result: method === 'eth_blockNumber' ? '0x66' : { status: receiptStatus, blockNumber: '0x64' } }))
+    })
+    try {
+      const result = await server({}).call('get_tx_status', { family: 'evm', chain_id: 1, tx_hash: TX_HASH })
+      expect(result.isError).toBe(false)
+      expect(result.body).toMatchObject({ status: receiptStatus === '0x1' ? 'confirmed' : 'failed', confirmations: 3 })
+    } finally { fetcher.mockRestore() }
+  })
+
+  it('does not claim an unknown EVM hash was submitted', async () => {
+    const fetcher = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ result: null })))
+    try {
+      const result = await server({}).call('get_tx_status', { family: 'evm', chain_id: 1, tx_hash: TX_HASH })
+      expect(result.body).toMatchObject({ status: 'pending_or_unknown', confirmations: 0 })
+    } finally { fetcher.mockRestore() }
+  })
+
+  it('reads bitcoin confirmations from the matching network tip', async () => {
+    const fetcher = vi.spyOn(globalThis, 'fetch').mockImplementation(async url => String(url).endsWith('/blocks/tip/height')
+      ? new Response('102') : new Response(JSON.stringify({ confirmed: true, block_height: 100 })))
+    try {
+      const result = await server({}).call('get_tx_status', { family: 'bitcoin', network: 'signet', tx_hash: 'ab'.repeat(32) })
+      expect(result.body).toMatchObject({ status: 'confirmed', confirmations: 3 })
+    } finally { fetcher.mockRestore() }
+  })
+
+  it('refuses malformed data instead of fabricating a zero balance', async () => {
+    const fetcher = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response('{}'))
+    try {
+      for (const args of [{ family: 'evm', chain_id: 1, address: TO }, { family: 'bitcoin', network: 'testnet', address: BTC_TEST }, { family: 'chia', network: 'testnet11', address: TXCH }]) {
+        expect((await server({}).call('get_balance', args)).isError).toBe(true)
+      }
+    } finally { fetcher.mockRestore() }
   })
 })
 
 describe('request_token_transfer', () => {
+  it('cancels without sending when the user cancels during token metadata reads', async () => {
+    const h = await human()
+    const delivered: string[] = []
+    const { mcp } = server({ evm: evmPairing(h.room) }, { requestTtlMs: 200, onWallet: wallet => {
+      wallet.on('request_sent', event => delivered.push(event.request_id))
+    } })
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const fetcher = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
+      await gate
+      const data = JSON.parse(init!.body as string).params[0].data
+      return new Response(JSON.stringify({ result: data === '0x313ce567' ? '0x' + '0'.repeat(63) + '6' : '0x' + '414243'.padEnd(64, '0') }))
+    })
+    try {
+      const pending = mcp.handleLine(JSON.stringify({ jsonrpc: '2.0', id: 'cancel-token', method: 'tools/call', params: {
+        name: 'request_token_transfer', arguments: { chain_id: 1, to: TO, token: TO, amount: '1', reason: 'pay' },
+      } }))
+      await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2))
+      await mcp.handleLine(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: 'cancel-token' } }))
+      release()
+      expect(await pending).toBeNull()
+      expect(delivered).toHaveLength(0)
+      expect(h.requests).toHaveLength(0)
+    } finally { release(); fetcher.mockRestore() }
+  })
+
   it('builds a listed USDC transfer with exact human units and the existing wire kind', async () => {
     const h = await human(approve)
     const { call } = server({ evm: evmPairing(h.room) })
