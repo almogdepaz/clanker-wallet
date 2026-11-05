@@ -1,10 +1,11 @@
 import { decodeChiaAddress, decodeSegwitAddress } from './bech32.js'
-import { abiUint, ChainDataError, evmRpc, nativeSymbol, resolveToken, type ChainDataOptions } from './chain-data.js'
+import { abiUint, ChainDataError, evmRpc, nativeSymbol, readChainResponse, resolveToken, type ChainDataOptions } from './chain-data.js'
 import { validateTx } from './validate.js'
 
 const BITCOIN_API: Record<string, string> = {
   mainnet: 'https://mempool.space/api', testnet: 'https://mempool.space/testnet/api', signet: 'https://mempool.space/signet/api',
 }
+const MAX_CHIA_COIN_RECORDS = 10_000
 const CHIA_API: Record<string, string> = { mainnet: 'https://api.coinset.org', testnet11: 'https://testnet11.api.coinset.org' }
 const object = (value: unknown): Record<string, unknown> => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new ChainDataError('malformed chain response')
@@ -32,12 +33,16 @@ function network(args: Record<string, unknown>, endpoints: Record<string, string
 async function http(url: string, options: ChainDataOptions, init?: RequestInit, allowMissing = false): Promise<Response> {
   try {
     const result = await (options.fetch ?? globalThis.fetch)(url, { ...init, signal: AbortSignal.timeout(10_000) })
-    if (!result.ok && !(allowMissing && result.status === 404)) throw new Error()
+    if (!result.ok) {
+      await result.body?.cancel()
+      if (!(allowMissing && result.status === 404)) throw new Error()
+    }
     return result
   } catch { throw new ChainDataError('public chain API read failed; retry later') }
 }
 async function json(response: Response): Promise<unknown> {
-  try { return await response.json() } catch { throw new ChainDataError('malformed chain JSON response') }
+  const text = await readChainResponse(response)
+  try { return JSON.parse(text) } catch { throw new ChainDataError('malformed chain JSON response') }
 }
 
 /** Validate legacy Base58Check as well as segwit recipients; no URL/path comes from the caller. */
@@ -104,8 +109,9 @@ export async function getBalance(args: Record<string, unknown>, options: ChainDa
     const response = await http(`${CHIA_API[chainNetwork]}/get_coin_records_by_puzzle_hash`, options, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ puzzle_hash: puzzleHash, include_spent_coins: false }),
     })
-    const body = coinJson(await response.text())
+    const body = coinJson(await readChainResponse(response))
     if (body.success !== true || !Array.isArray(body.coin_records)) throw new ChainDataError('coin-record API did not return a successful balance')
+    if (body.coin_records.length > MAX_CHIA_COIN_RECORDS) throw new ChainDataError('too many coin records: limit 10000; no partial balance returned')
     let raw = 0n
     const seen = new Set<string>()
     for (const item of body.coin_records) {
@@ -151,7 +157,7 @@ export async function getTxStatus(args: Record<string, unknown>, options: ChainD
     if (row.confirmed === false) return { ...common, status: 'pending', confirmations: 0 }
     if (row.confirmed !== true) throw new ChainDataError('invalid bitcoin transaction status')
     const height = nonnegativeInteger(row.block_height)
-    const tipText = await (await http(`${base}/blocks/tip/height`, options)).text()
+    const tipText = await readChainResponse(await http(`${base}/blocks/tip/height`, options))
     if (!/^(0|[1-9][0-9]*)$/.test(tipText)) throw new ChainDataError('invalid bitcoin tip height')
     const tip = nonnegativeInteger(Number(tipText))
     if (tip < height) throw new ChainDataError('inconsistent bitcoin block height; retry')

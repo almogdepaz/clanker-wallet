@@ -20,6 +20,33 @@ export interface ChainDataOptions {
 }
 export class ChainDataError extends Error {}
 
+const MAX_CHAIN_RESPONSE_BYTES = 1024 * 1024
+
+/** Bound decoded chain-response buffering by bytes actually read, not an untrusted Content-Length. */
+export async function readChainResponse(response: Response): Promise<string> {
+  const reader = response.body?.getReader()
+  if (!reader) return ''
+  const decoder = new TextDecoder()
+  let bytes = 0
+  let text = ''
+  try {
+    while (true) {
+      const chunk = await reader.read()
+      if (chunk.done) return text + decoder.decode()
+      bytes += chunk.value.byteLength
+      if (bytes > MAX_CHAIN_RESPONSE_BYTES) throw new ChainDataError('chain response too large: limit 1048576 bytes; no partial result returned')
+      text += decoder.decode(chunk.value, { stream: true })
+    }
+  } catch (err) {
+    try { await reader.cancel() }
+    catch { /* an already-errored body may refuse cancellation; retain the original sanitized failure */ }
+    if (err instanceof ChainDataError) throw err
+    throw new ChainDataError('chain response body read failed')
+  } finally {
+    reader.releaseLock()
+  }
+}
+
 export function rpcUrlsFromJson(value: string | undefined): Record<number, string> | undefined {
   if (!value) return undefined
   try {
@@ -41,11 +68,14 @@ export async function evmRpc(chainId: number, method: string, params: unknown[],
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }), signal: AbortSignal.timeout(10_000),
     })
-    if (!response.ok) throw new Error()
-    const body = await response.json() as { result?: unknown; error?: unknown }
+    if (!response.ok) { await response.body?.cancel(); throw new Error() }
+    const body = JSON.parse(await readChainResponse(response)) as { result?: unknown; error?: unknown }
     if (body.error || !Object.hasOwn(body, 'result')) throw new Error()
     return body.result
-  } catch { throw new ChainDataError(`chain ${chainId} RPC read failed (${method})`) }
+  } catch (err) {
+    if (err instanceof ChainDataError) throw err
+    throw new ChainDataError(`chain ${chainId} RPC read failed (${method})`)
+  }
 }
 
 export interface TokenMetadata { address: string; symbol: string; decimals: number }
@@ -70,7 +100,10 @@ export async function resolveToken(chainId: number, token: unknown, options: Cha
     if (decimals > 255) throw new Error()
     const symbol = abiSymbol(rawSymbol)
     return { address: transaction.to, decimals, symbol }
-  } catch { throw new ChainDataError('token metadata unavailable: decimals() and symbol() must both answer; nothing was sent') }
+  } catch (err) {
+    const detail = err instanceof ChainDataError ? ` (${err.message})` : ''
+    throw new ChainDataError(`token metadata unavailable${detail}: decimals() and symbol() must both answer; nothing was sent`)
+  }
 }
 
 export function abiUint(value: unknown): bigint {
