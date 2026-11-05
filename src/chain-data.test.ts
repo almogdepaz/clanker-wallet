@@ -5,6 +5,9 @@ const ADDRESS = '0x' + '1'.repeat(40)
 const word = (n: bigint) => '0x' + n.toString(16).padStart(64, '0')
 
 describe('chain data trust boundaries', () => {
+  it('uses the live keyless Amoy endpoint rather than the removed Polygon DNS name', () => {
+    expect(DEFAULT_RPC_URLS[80002]).toBe('https://polygon-amoy-bor-rpc.publicnode.com')
+  })
   it('resolves wstETH to its independently verified Lido contract, not an old display-only label', async () => {
     const tx = await buildTokenTransfer({ chain_id: 1, to: ADDRESS, token: 'wstETH', amount: '1' })
     expect(tx.transaction.to).toBe('0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0')

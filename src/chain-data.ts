@@ -12,7 +12,7 @@ export const DEFAULT_RPC_URLS: Readonly<Record<number, string>> = {
   10: 'https://mainnet.optimism.io',
   11155420: 'https://sepolia.optimism.io',
   137: 'https://polygon-bor-rpc.publicnode.com',
-  80002: 'https://rpc-amoy.polygon.technology',
+  80002: 'https://polygon-amoy-bor-rpc.publicnode.com',
 }
 export interface ChainDataOptions {
   rpcUrls?: Readonly<Record<number, string>>
