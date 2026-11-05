@@ -1,3 +1,4 @@
+import { buildTokenTransfer, ChainDataError, rpcUrlsFromJson, type ChainDataOptions } from './chain-data.js'
 import { RelayError, type ClankerWallet } from './client.js'
 import type { TxContext } from './types.js'
 import { InvalidTxError, validateTransfer, validateTx } from './validate.js'
@@ -34,7 +35,7 @@ export interface SavedPairing {
 type RequestFamily = 'evm' | 'bitcoin' | 'chia'
 const REQUEST_FAMILIES: RequestFamily[] = ['evm', 'bitcoin', 'chia']
 
-export interface McpServerOptions {
+export interface McpServerOptions extends ChainDataOptions {
   /** the package version, reported in initialize */
   version: string
   /** review app origin (or CLANKER_WALLET_WEB_ORIGIN; default https://clanker-wallet.xyz) */
@@ -119,6 +120,26 @@ export const MCP_TOOLS = [
     annotations: REQUEST_HINTS,
   },
   {
+    name: 'request_token_transfer',
+    description: 'Ask the human to send an EVM token or native coin from their own wallet. ' +
+      'The human approves every request on their own device. amount is a human decimal string; never rounded. ' +
+      'Use a listed symbol for that chain or pass the contract address; unlisted symbols are refused, never searched. ' +
+      'Omit token (or use the native symbol) for native coin. Returns { request_id, review_url }; show review_url to the user, then call get_request.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        chain_id: { type: 'integer', description: 'EVM chain id' },
+        to: { type: 'string', description: 'recipient EVM address' },
+        token: { type: 'string', description: 'listed symbol on this chain or token contract address; omitted or native symbol sends native coin' },
+        amount: { type: 'string', description: 'positive human decimal string, e.g. 1.25; excess fraction digits are refused' },
+        ...CONTEXT_PROPERTIES,
+        ...FROM_PROPERTY,
+      },
+      required: ['chain_id', 'to', 'amount', 'reason'],
+    },
+    annotations: REQUEST_HINTS,
+  },
+  {
     name: 'get_request',
     description: 'Get the outcome of a request: pending, approved (with tx_hash; a chia send may have none, so check the recipient\'s balance), rejected, failed (with error), unknown (with error) or expired. ' +
       `The human may take minutes to answer: pass wait_seconds (at most ${MAX_WAIT_SECONDS}) to wait for it, and call again while it is pending. ` +
@@ -128,7 +149,7 @@ export const MCP_TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        request_id: { type: 'string', description: 'from request_evm_tx or request_transfer' },
+        request_id: { type: 'string', description: 'from request_evm_tx, request_transfer or request_token_transfer' },
         wait_seconds: { type: 'number', minimum: 0, maximum: MAX_WAIT_SECONDS, description: 'wait up to this long for an answer (default 0)' },
       },
       required: ['request_id'],
@@ -145,7 +166,7 @@ export const MCP_TOOLS = [
 ]
 
 const INSTRUCTIONS = 'clanker-wallet sends transaction requests to a human, who approves or rejects each one in their own wallet; ' +
-  'you never hold keys. Call list_pairings to see which chains you can use, request_evm_tx or request_transfer to ask, ' +
+  'you never hold keys. Call list_pairings to see which chains you can use, request_evm_tx, request_transfer or request_token_transfer to ask, ' +
   'and get_request (with wait_seconds) until the request is no longer pending.'
 
 /** what get_request reports, in the order the docs list them */
@@ -234,6 +255,7 @@ export function createMcpServer(options: McpServerOptions): { handleLine: (line:
   const reviewUrl = (id: string) => `${webOrigin}/?request=${encodeURIComponent(id)}`
   const ttl = options.requestTtlMs ?? DEFAULT_REQUEST_TTL_MS
   const joinTimeout = options.joinTimeoutMs ?? DEFAULT_JOIN_TIMEOUT_MS
+  const chainOptions = { ...options, rpcUrls: options.rpcUrls ?? rpcUrlsFromJson(process.env.CLANKER_WALLET_RPC_URLS) }
   const records = new Map<string, RequestRecord>()
   /** tools/call requests still being answered, by JSON-RPC id, for notifications/cancelled */
   const inFlight = new Map<unknown, AbortController>()
@@ -293,6 +315,13 @@ export function createMcpServer(options: McpServerOptions): { handleLine: (line:
     const context = contextFrom(args)
     const from = fromArg(args)
     const { chain_id, transaction } = validateTx(args.chain_id, { to: args.to, value: args.value, data: args.data ?? '0x' })
+    return submit('evm', from, cancelled, (wallet, limits) => wallet.requestTx({ chain_id, transaction, context, ...limits }))
+  }
+
+  async function requestTokenTransfer(args: Record<string, unknown>, cancelled: AbortSignal): Promise<ToolResult> {
+    const context = contextFrom(args)
+    const from = fromArg(args)
+    const { chain_id, transaction } = await buildTokenTransfer({ chain_id: args.chain_id, to: args.to, token: args.token, amount: args.amount }, chainOptions)
     return submit('evm', from, cancelled, (wallet, limits) => wallet.requestTx({ chain_id, transaction, context, ...limits }))
   }
 
@@ -362,6 +391,7 @@ export function createMcpServer(options: McpServerOptions): { handleLine: (line:
   const TOOL_HANDLERS: Record<string, (args: Record<string, unknown>, cancelled: AbortSignal) => ToolResult | Promise<ToolResult>> = {
     request_evm_tx: requestEvmTx,
     request_transfer: requestTransfer,
+    request_token_transfer: requestTokenTransfer,
     get_request: getRequest,
     list_pairings: listPairings,
   }
@@ -375,7 +405,7 @@ export function createMcpServer(options: McpServerOptions): { handleLine: (line:
     try {
       return await handler(args, cancelled)
     } catch (err) {
-      if (err instanceof ToolInputError || err instanceof InvalidTxError) return toolError(err.message)
+      if (err instanceof ToolInputError || err instanceof InvalidTxError || err instanceof ChainDataError) return toolError(err.message)
       throw err
     }
   }

@@ -63,7 +63,8 @@ function server(pairings: Partial<Record<string, SavedPairing>>, { requestTtlMs,
   }
   /** a tools/call result: `isError` and the parsed text payload (or the error text) */
   const call = async (name: string, args: Record<string, unknown> = {}) => {
-    const { result } = await rpc('tools/call', { name, arguments: args })
+    const { result, error } = await rpc('tools/call', { name, arguments: args })
+    if (error) return { isError: true, text: error.message }
     const text = result.content[0].text
     return result.isError ? { isError: true, text } : { isError: false, body: JSON.parse(text) }
   }
@@ -129,7 +130,7 @@ describe('mcp protocol', () => {
 
   it('lists the four tools with object schemas, stating human approval and integer-string amounts', async () => {
     const { result } = await rpc('tools/list')
-    expect(result.tools.map((t: any) => t.name)).toEqual(['request_evm_tx', 'request_transfer', 'get_request', 'list_pairings'])
+    expect(result.tools.map((t: any) => t.name)).toEqual(['request_evm_tx', 'request_transfer', 'request_token_transfer', 'get_request', 'list_pairings'])
     for (const tool of result.tools) expect(tool.inputSchema.type).toBe('object')
     const byName = Object.fromEntries(result.tools.map((t: any) => [t.name, t]))
     for (const name of ['request_evm_tx', 'request_transfer']) {
@@ -167,7 +168,66 @@ describe('mcp protocol', () => {
     const annotations = Object.fromEntries(result.tools.map((t: any) => [t.name, t.annotations]))
     const request = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true }
     const read = { readOnlyHint: true, openWorldHint: false }
-    expect(annotations).toEqual({ request_evm_tx: request, request_transfer: request, get_request: read, list_pairings: read })
+    expect(annotations).toEqual({ request_evm_tx: request, request_transfer: request, request_token_transfer: request, get_request: read, list_pairings: read })
+  })
+})
+
+describe('request_token_transfer', () => {
+  it('builds a listed USDC transfer with exact human units and the existing wire kind', async () => {
+    const h = await human(approve)
+    const { call } = server({ evm: evmPairing(h.room) })
+    const sent = await call('request_token_transfer', { chain_id: 84532, to: TO, token: 'USDC', amount: '1.25', reason: 'pay' })
+    expect(sent.isError).toBe(false)
+    await call('get_request', { request_id: sent.body.request_id, wait_seconds: 5 })
+    expect(h.requests[0]).toMatchObject({
+      chain_id: 84532,
+      transaction: { to: '0x036cbd53842c5426634e7929541ec2318f3dcf7e', value: '0',
+        data: '0xa9059cbb' + TO.slice(2).toLowerCase().padStart(64, '0') + (1250000n).toString(16).padStart(64, '0') },
+      context: { reason: 'pay' },
+    })
+    expect(sent.body.review_url).toContain('?request=')
+  })
+
+  it.each([
+    ['USDC', '0.0000001', 'fraction'],
+    ['NOTACOIN', '1', 'pass the contract address'],
+    ['USDC', '1e6', 'decimal'],
+    ['USDC', '-1', 'decimal'],
+  ])('refuses %s %s without sending', async (token, amount, error) => {
+    const { call } = server({})
+    const result = await call('request_token_transfer', { chain_id: 84532, to: TO, token, amount, reason: 'pay' })
+    expect(result.isError).toBe(true)
+    expect(result.text).toContain(error)
+  })
+
+  it('reads unlisted contract metadata and refuses an unavailable decimals/symbol', async () => {
+    const h = await human(approve)
+    const { call } = server({ evm: evmPairing(h.room) })
+    const symbol = '0x' + (32).toString(16).padStart(64, '0') + (3).toString(16).padStart(64, '0') + '414243'.padEnd(64, '0')
+    const fetcher = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
+      const body = JSON.parse(init!.body as string)
+      const result = body.params[0].data === '0x313ce567' ? '0x' + (8).toString(16).padStart(64, '0') : symbol
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result }))
+    })
+    try {
+      const sent = await call('request_token_transfer', { chain_id: 84532, to: TO, token: TO, amount: '1.12345678', reason: 'pay' })
+      expect(sent.isError).toBe(false)
+      await call('get_request', { request_id: sent.body.request_id, wait_seconds: 5 })
+      expect(h.requests[0].transaction.data).toContain((112345678n).toString(16).padStart(64, '0'))
+      fetcher.mockResolvedValue(new Response(JSON.stringify({ error: { message: 'reverted' } })))
+      const refused = await call('request_token_transfer', { chain_id: 84532, to: TO, token: TO, amount: '1', reason: 'pay' })
+      expect(refused.isError).toBe(true)
+      expect(refused.text).toContain('metadata')
+    } finally { fetcher.mockRestore() }
+  })
+
+  it.each([undefined, 'ETH'])('sends native units when token is %s', async (token) => {
+    const h = await human(approve)
+    const { call } = server({ evm: evmPairing(h.room) })
+    const sent = await call('request_token_transfer', { chain_id: 84532, to: TO, token, amount: '0.5', reason: 'pay' })
+    expect(sent.isError).toBe(false)
+    await call('get_request', { request_id: sent.body.request_id, wait_seconds: 5 })
+    expect(h.requests[0].transaction).toEqual({ to: TO, value: '500000000000000000', data: '0x' })
   })
 })
 
