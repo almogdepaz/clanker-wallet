@@ -16,7 +16,7 @@ export const DEFAULT_RPC_URLS: Readonly<Record<number, string>> = {
 }
 export interface ChainDataOptions {
   rpcUrls?: Readonly<Record<number, string>>
-  fetch?: typeof globalThis.fetch
+  fetch?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>
 }
 export class ChainDataError extends Error {}
 

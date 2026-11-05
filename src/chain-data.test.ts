@@ -10,7 +10,7 @@ describe('chain data trust boundaries', () => {
     for (const url of Object.values(DEFAULT_RPC_URLS)) expect(new URL(url).search).toBe('')
   })
   it('uses an operator RPC override, never a URL supplied as a token', async () => {
-    const fetcher = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ result: word(1n) })))
+    const fetcher = vi.fn<(input: string | URL | Request, init?: RequestInit) => Promise<Response>>(async () => new Response(JSON.stringify({ result: word(1n) })))
     await evmRpc(1, 'eth_call', [], { rpcUrls: { 1: 'https://operator.example/rpc' }, fetch: fetcher })
     expect(fetcher.mock.calls[0][0]).toBe('https://operator.example/rpc')
     await expect(resolveToken(1, 'https://attacker.example', { fetch: fetcher })).rejects.toThrow('pass the contract address')
