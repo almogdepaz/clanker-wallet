@@ -434,7 +434,7 @@ describe('cli mcp', () => {
       expect(client.getServerVersion()).toEqual({ name: 'clanker-wallet', version })
 
       const { tools } = await client.listTools()
-      expect(tools.map((t) => t.name)).toEqual(['request_evm_tx', 'request_transfer', 'request_token_transfer', 'get_request', 'get_balance', 'get_tx_status', 'list_pairings'])
+      expect(tools.map((t) => t.name)).toEqual(['request_evm_tx', 'request_transfer', 'request_token_transfer', 'request_sign_message', 'request_sign_typed_data', 'get_request', 'get_balance', 'get_tx_status', 'list_pairings'])
 
       const sent = await client.callTool({ name: 'request_evm_tx', arguments: { chain_id: 84532, to: TO, value: '1', reason: 'conformance' } })
       expect(sent.isError).toBeFalsy()
