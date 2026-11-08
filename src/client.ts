@@ -1,7 +1,9 @@
 import { decryptMessage, encryptMessage, fromHex, generateKeypair, keypairFromSecret, signMessage, signingKeypairFromSeed, toHex } from './crypto.js'
 import { TypedEmitter } from './events.js'
-import type { AgentEnvelope, PairingData, RequestTransferOptions, RequestTxOptions, TransferRequest, TxRequest, TxResponse } from './types.js'
+import type { AgentEnvelope, PairingData, RequestSignMessageOptions, RequestSignTypedDataOptions, SignPayload, SignRequest, RequestTransferOptions, RequestTxOptions, TransferRequest, TxRequest, TxResponse } from './types.js'
 import { InvalidTxError, validateTransfer, validateTx } from './validate.js'
+
+import { checkSignRequestSize, isEoaSignature, validateSign } from './sign.js'
 
 const DEFAULT_TIMEOUT_MS = 3_600_000 // 1 hour
 
@@ -183,9 +185,33 @@ export class ClankerWallet extends TypedEmitter {
     return this.send(request, options)
   }
 
+  /** Request an EIP-191 signature. Every request requires human review. */
+  requestSignMessage(options: RequestSignMessageOptions): Promise<string> {
+    return this.requestSign(options, { method: 'personal_sign', message: options.message })
+  }
+
+  /** Request an EIP-712 v4 signature over the original parsed object. */
+  requestSignTypedData(options: RequestSignTypedDataOptions): Promise<string> {
+    return this.requestSign(options, { method: 'eth_signTypedData_v4', typed_data: options.typed_data })
+  }
+
+  private async requestSign(options: Omit<RequestTxOptions, 'transaction'>, input: SignPayload): Promise<string> {
+    if (!this.pairing) throw new Error('not paired — call pair() first')
+    if (this.pairing.chainFamily && this.pairing.chainFamily !== 'evm') throw new InvalidTxError('chain_family', 'signatures require an EVM pairing')
+    const { chain_id, sign } = validateSign(options.chain_id, input)
+    const request: SignRequest = {
+      request_id: newRequestId(), agent_id: this.agentId, timestamp: new Date().toISOString(),
+      chain_id, sign, context: options.context, signature: '',
+    }
+    request.signature = signMessage(JSON.stringify(request), this.signingSecretKey)
+    checkSignRequestSize(request)
+    // No relay simulation for signatures, even on managed pairings.
+    return (await this.send(request, options))!
+  }
+
   /** encrypt a signed request to the paired human, send it through the relay, and wait for the answer */
   private send(
-    request: TxRequest | TransferRequest,
+    request: TxRequest | TransferRequest | SignRequest,
     options: Pick<RequestTxOptions, 'timeout_ms' | 'join_timeout_ms' | 'signal'>,
     simulate?: Record<string, unknown>,
   ): Promise<string | undefined> {
@@ -315,11 +341,15 @@ export class ClankerWallet extends TypedEmitter {
               request_id: response.request_id,
               status: response.status,
               tx_hash: response.tx_hash,
+              signature: response.signature,
             })
 
             cleanup()
 
-            if (response.status === 'approved' && (response.tx_hash || hashOptional)) {
+            if (response.status === 'approved' && 'sign' in request) {
+              if (isEoaSignature(response.signature)) resolve(response.signature)
+              else reject(new Error(`request ${requestId}: approved without a well-formed 65-byte 0x signature`))
+            } else if (response.status === 'approved' && (response.tx_hash || hashOptional)) {
               resolve(response.tx_hash || undefined)
             } else if (response.status === 'rejected') {
               reject(new Error(`request ${requestId} rejected by human`))

@@ -1,3 +1,5 @@
+export { validateSign, checkSignRequestSize, isEoaSignature, SIGN_CHAIN_IDS, MAX_SIGN_PAYLOAD_BYTES, MAX_SIGN_REQUEST_BYTES } from './sign.js'
+export type { SignRequest, SignPayload, SignTypedData, RequestSignMessageOptions, RequestSignTypedDataOptions } from './types.js'
 export { getBalance, getTxStatus } from './reads.js'
 export { buildTokenTransfer, resolveToken, rpcUrlsFromJson, evmRpc, ChainDataError, DEFAULT_RPC_URLS } from './chain-data.js'
 export type { ChainDataOptions, TokenMetadata } from './chain-data.js'
