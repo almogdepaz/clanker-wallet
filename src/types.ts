@@ -12,11 +12,24 @@ export interface TxInput {
   data?: string
 }
 
+/** Unverified server claims; signed typed data remains the payment source of truth. */
+export interface X402Context {
+  resource_url: string
+  description?: string
+  service_name?: string
+  server_resource_url?: string
+  network: string
+  pay_to: string
+  asset: string
+  amount: string
+}
+
 /** optional context about the transaction */
 export interface TxContext {
   reason?: string
   urgency?: string
   expected_outcome?: string
+  x402?: X402Context
 }
 
 /** full tx request sent to the human (matches web app TxRequest) */

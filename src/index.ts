@@ -1,3 +1,6 @@
+export { X402Error, x402ContextError, X402_APPROVAL_MS, validateX402Fetch, fetchX402, prepareX402, x402PaymentHeader, x402HttpResult, retryX402 } from './x402.js'
+export type { X402FetchInput, X402Payment, X402Requirement, X402HttpResponse, X402HttpResult } from './x402.js'
+export type { X402Context } from './types.js'
 export { validateSign, checkSignRequestSize, isEoaSignature, SIGN_CHAIN_IDS, MAX_SIGN_PAYLOAD_BYTES, MAX_SIGN_REQUEST_BYTES } from './sign.js'
 export type { SignRequest, SignPayload, SignTypedData, RequestSignMessageOptions, RequestSignTypedDataOptions } from './types.js'
 export { getBalance, getTxStatus } from './reads.js'
