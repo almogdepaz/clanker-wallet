@@ -123,6 +123,17 @@ describe('documented contract', () => {
   })
 })
 
+describe('documented signature requests', () => {
+  it.each(['README.md', 'SKILL.md', 'llms-full.txt'])('%s explains payload, safety and result contracts', doc => {
+    const text = read(doc)
+    for (const required of ['personal_sign', 'eth_signTypedData_v4', 'eth_sign', 'EIP712Domain', 'primaryType', 'domain.chainId', '32768', '40000', '65-byte', 'signature', 'auto-approve', 'permits', 'second confirmation']) expect(text).toContain(required)
+    expect(text).toContain('requestSignMessage')
+    expect(text).toContain('requestSignTypedData')
+    expect(text).toContain('no bitcoin or chia message signing')
+    expect(text).toContain('not a JSON string')
+  })
+})
+
 describe('documented mcp server', () => {
   const MCP_DOCS = ['SKILL.md', 'README.md', 'llms-full.txt']
   const SERVER_ENTRY = { command: 'npx', args: ['-y', 'clanker-wallet', 'mcp'] }

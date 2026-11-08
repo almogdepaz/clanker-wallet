@@ -218,10 +218,73 @@ Claude Desktop (`claude_desktop_config.json`), Cursor (`~/.cursor/mcp.json`), an
 | `request_evm_tx` | `chain_id`, `to`, `value` (wei, integer string), `data` (default `0x`), `reason`, optional `urgency` / `expected_outcome` / `from` (the paired wallet to send from, needed when several wallets of the same family are paired) | `{"request_id":"req_...","review_url":"https://clanker-wallet.xyz/?request=req_...","status":"pending","expires_at":"..."}` |
 | `request_transfer` | `family` (`bitcoin` or `chia`), `network` (bitcoin: `mainnet`, `testnet`, `signet`; chia: `mainnet`, `testnet11`), `to`, `amount` (sats, integer string) or mojos for chia, `reason`, optional `fee` (chia only: mojos, default `"0"`) / `urgency` / `expected_outcome` / `from` (the paired wallet to send from, needed when several wallets of the same family are paired) | as above |
 | `request_token_transfer` | `chain_id`, `to`, `amount` (positive human decimal string), `reason`, optional `token` (listed symbol or contract address; omitted/native symbol = native coin), `from`, `urgency`, `expected_outcome` | `request_id`, `review_url`, pending status and expiry; existing EVM request, no signing here |
-| `get_request` | `request_id`, optional `wait_seconds` (at most 50) | `status`: `pending`, `approved` (with `tx_hash`; a chia send may have none), `rejected`, `failed` (with `error`), `unknown` (with `error`) or `expired` |
+| `request_sign_message` | `chain_id`, `message` (UTF-8 text or 0x-prefixed even-length hex bytes), `reason`, optional `from`, `urgency`, `expected_outcome` | `request_id`, `review_url`, pending status and expiry; `get_request` returns `signature` on approval |
+| `request_sign_typed_data` | `chain_id`, `typed_data` (parsed EIP-712 object), `reason`, optional `from`, `urgency`, `expected_outcome` | as above; human signs in their wallet |
+| `get_request` | `request_id`, optional `wait_seconds` (at most 50) | `status`: `pending`, `approved` (with `signature` for signing or `tx_hash` for transactions; a chia send may have none), `rejected`, `failed` (with `error`), `unknown` (with `error`) or `expired` |
 | `get_balance` | `family`, `address` (any recipient), EVM `chain_id`, bitcoin/chia `network`, optional EVM `token` (listed symbol or address) | exact `raw_balance`, human `balance`, `asset`, `decimals`; bitcoin also confirmed/mempool deltas; chia recipient puzzle-hash unspent coins only |
 | `get_tx_status` | `family` (evm/bitcoin), `tx_hash`, EVM `chain_id` or bitcoin `network` | receipt `status` and `confirmations`; missing EVM receipt is `pending_or_unknown`, missing bitcoin hash is `unknown` |
 | `list_pairings` | none | `agent_id`, `fingerprint`, and the paired families (`evm`, `bitcoin`, `chia`) with network, wallet and mode |
+
+### EVM signature requests
+
+Use `request_sign_message` (`personal_sign`) or `request_sign_typed_data` (`eth_signTypedData_v4`).
+Show the returned `review_url`: the user reviews and signs in their own wallet. Explain why a signature is
+needed: signatures can authorize spending through permits, not just prove identity. `eth_sign` is never
+available; there is no bitcoin or chia message signing. These tools require an EVM pairing.
+
+`message` is UTF-8 text or 0x-prefixed even-length hex representing raw bytes, not the literal hex text.
+`typed_data` is a parsed `{ domain, types, primaryType, message }` object, not a JSON string.
+`types` must include `EIP712Domain` and `primaryType`; `domain.chainId`, when present, must equal
+`chain_id`. Supported chains: Ethereum, Base, Arbitrum, Optimism, Polygon and their configured testnets.
+The web also requires exact domain type declarations; unsupported/malformed payloads only allow rejection.
+
+Limits: at most 32768 compact JSON UTF-8 bytes for the message or typed-data object, and 40000 bytes
+for the complete signed request including context. These leave room for encryption, base64 and the
+relay envelope under its 64 KiB limit. Oversize requests fail before relay delivery; nothing is truncated.
+Signatures never carry relay simulation data, including in managed mode.
+
+Every signature needs individual manual review: auto-approve rules, batch approval and approval shortcuts
+cannot sign. Danger flags or incomplete/failed lookups require a second confirmation; ordinary warnings
+do not. Unknown typed-data schemas retain raw fields and warn about unseen authorizations.
+Metadata and account-type lookups use trusted chain-scoped sources, never agent-provided labels.
+Signing is blocked for an account other than the paired account or a different chain; switch chains and
+review again first. The web signs the original payload and verifies recovery to the paired EOA.
+Smart-contract wallet signatures (ERC-1271) are not supported.
+
+An approval returns a 65-byte `0x` `signature`, not `tx_hash`; malformed approvals fail.
+`get_request` includes it only on approved signature requests. Rejection, cancellation or wallet errors
+never return a signature. History/audit/notification records do not contain the signing payload.
+A signature can remain usable outside this app; rejecting a later request does not revoke prior signatures.
+
+The TypeScript library provides `requestSignMessage` and `requestSignTypedData`, resolving to that signature.
+Both take `chain_id`, optional `context`, `timeout_ms`, `join_timeout_ms` and `signal` with the same
+waiting/cancellation semantics as `requestTx`. Bitcoin/chia pairings and invalid input throw
+`InvalidTxError` before sending. No new CLI signature command or Python signing API is provided.
+
+```typescript
+const signature = await wallet.requestSignMessage({
+  chain_id: 84532,
+  message: 'Confirm ownership for this test session',
+  context: { reason: 'prove ownership for a test login' },
+})
+const typedSignature = await wallet.requestSignTypedData({
+  chain_id: 84532,
+  typed_data: {
+    domain: { chainId: 84532 },
+    types: {
+      EIP712Domain: [{ name: 'chainId', type: 'uint256' }],
+      Session: [{ name: 'purpose', type: 'string' }],
+    },
+    primaryType: 'Session',
+    message: { purpose: 'test login' },
+  },
+  context: { reason: 'sign the test session terms' },
+})
+```
+
+Signature requests require a web UI with signature support. Older transaction-only web versions ignore
+them without offering a wallet action; if no signature card appears, wait for the compatible web release
+rather than repeatedly sending requests.
 
 `request_token_transfer` uses the browser-safe `clanker-wallet/tokens` list (chain id, symbol, address, decimals). Unlisted symbols are refused: pass the contract address; never search by symbol. Unlisted contracts must answer both `decimals()` and `symbol()` via RPC. Excess fraction digits are refused, never rounded. The review card reads unlisted token metadata independently and warns with the full contract address; a reported symbol matching a listed token at another address is a danger flag, not an identity check.
 

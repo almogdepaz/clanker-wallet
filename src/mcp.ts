@@ -182,7 +182,7 @@ export const MCP_TOOLS = [
   },
   {
     name: 'get_request',
-    description: 'Get the outcome of a request: pending, approved (with tx_hash; a chia send may have none, so check the recipient\'s balance), rejected, failed (with error), unknown (with error) or expired. ' +
+    description: 'Get the outcome of a request: pending, approved (with signature for signing, or tx_hash for transactions; a chia send may have none, so check the recipient\'s balance), rejected, failed (with error), unknown (with error) or expired. ' +
       `The human may take minutes to answer: pass wait_seconds (at most ${MAX_WAIT_SECONDS}) to wait for it, and call again while it is pending. ` +
       'unknown means the request was delivered but this server lost its relay connection: the human may still approve it, so ask them before sending it again. ' +
       'expired means this server stopped waiting, 1 hour after sending; after a restart it no longer knows earlier request ids. ' +
@@ -237,7 +237,7 @@ export const MCP_TOOLS = [
   },
 ]
 
-const INSTRUCTIONS = 'clanker-wallet sends transaction requests to a human, who approves or rejects each one in their own wallet; ' +
+const INSTRUCTIONS = 'clanker-wallet sends transaction and signature requests to a human, who approves or rejects each one in their own wallet; ' +
   'you never hold keys. Call list_pairings to see which chains you can use, request_evm_tx, request_transfer, request_token_transfer, request_sign_message or request_sign_typed_data to ask, ' +
   'and get_request (with wait_seconds) until the request is no longer pending.'
 
