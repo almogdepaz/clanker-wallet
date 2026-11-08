@@ -469,8 +469,8 @@ export function createMcpServer(options: McpServerOptions): { handleLine: (line:
     if (record.status === 'pending' && waitMs > 0) {
       let timer: ReturnType<typeof setTimeout> | undefined
       const waits = [record.settled, new Promise((r) => cancelled.addEventListener('abort', r, { once: true }))]
-      // a wait that reaches past expiry ends when the request's expiry timer settles it
-      if (record.retrying || waitMs < record.expiresAt - Date.now()) waits.push(new Promise((r) => { timer = setTimeout(r, waitMs) }))
+      // Approval can cancel request expiry and start a paid retry during this poll. Its wait cap stays independent.
+      waits.push(new Promise((r) => { timer = setTimeout(r, waitMs) }))
       await Promise.race(waits)
       clearTimeout(timer)
     }

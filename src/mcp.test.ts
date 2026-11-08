@@ -100,6 +100,69 @@ describe('x402 tools', () => {
       expect(fetch).toHaveBeenCalledTimes(1)
     } finally { fetch.mockRestore() }
   })
+  it.each(['success', 'failure'] as const)('caps a poll started before approval while the paid retry awaits %s', async outcome => {
+    vi.useFakeTimers()
+    let approve!: () => void, releaseRetry!: () => void
+    const approval = new Promise<void>(resolve => { approve = resolve })
+    const retry = new Promise<void>(resolve => { releaseRetry = resolve })
+    class ReviewingWallet extends ClankerWallet {
+      override async requestSignTypedData(): Promise<string> {
+        this.emit('request_sent', { request_id: 'wait-cap-request' })
+        await approval
+        return '0x' + 'ab'.repeat(65)
+      }
+    }
+    const wallet = new ReviewingWallet()
+    const url = 'https://service.example/paid'
+    const requirement = { scheme: 'exact', network: 'eip155:8453', amount: '10000', asset: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', payTo: TO, maxTimeoutSeconds: 60, extra: { name: 'USD Coin', version: '2' } }
+    const fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      if (!new Headers(init?.headers).has('payment-signature')) return new Response('{}', { status: 402, headers: { 'payment-required': Buffer.from(JSON.stringify({ x402Version: 2, resource: { url }, accepts: [requirement] })).toString('base64') } })
+      await retry
+      if (outcome === 'failure') throw new Error('HTTP service unavailable')
+      return new Response('paid', { headers: { 'content-type': 'text/plain' } })
+    })
+    const mcp = createMcpServer({ version: 'test', identity: { agent_id: 'test', fingerprint: 'test' }, requestTtlMs: 100,
+      loadPairing: () => ({ pubkey: 'a'.repeat(64), wallet: '0x' + '1'.repeat(40), relay: 'wss://unused', mode: 'encrypted' }),
+      wallet: () => wallet, fetch,
+    })
+    let id = 0
+    const call = async (name: string, args: Record<string, unknown>) => {
+      const response = JSON.parse((await mcp.handleLine(JSON.stringify({ jsonrpc: '2.0', id: ++id, method: 'tools/call', params: { name, arguments: args } })))!)
+      expect(response.error).toBeUndefined()
+      expect(response.result.isError).not.toBe(true)
+      return JSON.parse(response.result.content[0].text)
+    }
+    let poll: Promise<unknown> | undefined
+    try {
+      const sent = await call('x402_fetch', { url, max_amount: '0.01', reason: 'read paid data' })
+      const startedAt = Date.now()
+      let polled: { status: string } | undefined
+      // Start waiting while the request is still unsigned. Its original expiry is earlier than the poll cap.
+      poll = call('get_request', { request_id: sent.request_id, wait_seconds: 0.15 }).then(result => { polled = result; return result })
+      await vi.advanceTimersByTimeAsync(30)
+      expect(polled).toBeUndefined()
+      expect(fetch).toHaveBeenCalledTimes(1)
+      approve()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(fetch).toHaveBeenCalledTimes(2)
+      await vi.advanceTimersByTimeAsync(119)
+      expect(polled).toBeUndefined()
+      await vi.advanceTimersByTimeAsync(1)
+      expect(Date.now() - startedAt).toBe(150)
+      expect(polled?.status).toBe('pending')
+      expect((await call('get_request', { request_id: sent.request_id })).status).toBe('pending')
+      releaseRetry()
+      const final = await call('get_request', { request_id: sent.request_id, wait_seconds: 1 })
+      if (outcome === 'success') expect(final).toMatchObject({ status: 'approved', result: { paid: true, body: 'paid' } })
+      else expect(final).toMatchObject({ status: 'failed', error: expect.stringContaining('HTTP request failed') })
+      expect(await call('get_request', { request_id: sent.request_id })).toEqual(final)
+      expect(fetch).toHaveBeenCalledTimes(2)
+    } finally {
+      releaseRetry()
+      await poll
+      vi.useRealTimers()
+    }
+  })
   it('retains the final result when an already-started paid retry outlives the approval deadline', async () => {
     const h = await human(req => ({ request_id: req.request_id, status: 'approved', signature: '0x' + 'ab'.repeat(65) }))
     const { call } = server({ evm: evmPairing(h.room) })
