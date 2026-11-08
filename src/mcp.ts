@@ -273,6 +273,7 @@ interface RequestRecord {
   signature?: string
   error?: string
   result?: X402HttpResult
+  retrying?: boolean
   /** resolves when the status leaves pending */
   settled: Promise<void>
   settle: (status: Exclude<RequestStatus, 'pending'>, detail?: { tx_hash?: string; signature?: string; error?: string; result?: X402HttpResult }) => void
@@ -389,6 +390,7 @@ export function createMcpServer(options: McpServerOptions): { handleLine: (line:
           if (record!.status !== 'pending') return
           clearTimeout(expiry)
           if (onApproved) {
+            record!.retrying = true
             try { record!.settle('approved', { result: await onApproved(result!) }) }
             catch (err) { record!.settle('failed', { error: err instanceof X402Error ? err.message : 'paid retry outcome unknown; not retried' }) }
           } else record!.settle('approved', signatureRequest ? { signature: result } : { tx_hash: result })
@@ -468,12 +470,12 @@ export function createMcpServer(options: McpServerOptions): { handleLine: (line:
       let timer: ReturnType<typeof setTimeout> | undefined
       const waits = [record.settled, new Promise((r) => cancelled.addEventListener('abort', r, { once: true }))]
       // a wait that reaches past expiry ends when the request's expiry timer settles it
-      if (waitMs < record.expiresAt - Date.now()) waits.push(new Promise((r) => { timer = setTimeout(r, waitMs) }))
+      if (record.retrying || waitMs < record.expiresAt - Date.now()) waits.push(new Promise((r) => { timer = setTimeout(r, waitMs) }))
       await Promise.race(waits)
       clearTimeout(timer)
     }
     // a fallback for an expiry timer that runs late (a busy process): it only marks expired once the clock has passed expires_at
-    if (record.status === 'pending' && Date.now() >= record.expiresAt) record.settle('expired')
+    if (record.status === 'pending' && !record.retrying && Date.now() >= record.expiresAt) record.settle('expired')
 
     const { status, tx_hash, signature, error, result } = record
     if (status === 'pending') return toolResult({ request_id, review_url: reviewUrl(request_id), status, expires_at: new Date(record.expiresAt).toISOString() })

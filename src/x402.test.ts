@@ -42,6 +42,40 @@ describe('x402 bounded HTTP and authorization', () => {
       expect(fetch).not.toHaveBeenCalled()
     } finally { vi.useRealTimers() }
   })
+  it('accepts spec-valid positive integer strings and empty EIP-712 domain strings without guessing values', async () => {
+    const result = await prepare(required([{ ...requirement, amount: '00010000', extra: { name: '', version: '' } }]))
+    expect(result.typed_data).toMatchObject({ domain: { name: '', version: '' }, message: { value: '00010000' } })
+  })
+  it('reads on-chain decimals for unlisted assets and ignores server precision claims', async () => {
+    const asset = '0x' + '3'.repeat(40)
+    const response = await x402.fetchX402(x402.validateX402Fetch({ url }), { fetch: async () => reply(required([{ ...requirement, asset, amount: '100', extra: { name: 'Token', version: '1', decimals: 6 } }])) })
+    const fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const call = JSON.parse(String(init?.body))
+      expect(call.params[0].to).toBe(asset)
+      const result = call.params[0].data === '0x313ce567' ? '0x' + '2'.padStart(64, '0') : '0x' + Buffer.from('TKN').toString('hex').padEnd(64, '0')
+      return new Response(JSON.stringify({ result }))
+    })
+    await expect(x402.prepareX402(response, url, '0.99', payer, { fetch })).rejects.toThrow('max_amount')
+    expect(fetch).toHaveBeenCalledTimes(2)
+    expect(await x402.prepareX402(response, url, '1', payer, { fetch })).toMatchObject({ typed_data: { message: { value: '100' } } })
+  })
+  it('enforces the HTTP deadline during stalled body reads and cancels the stream', async () => {
+    vi.useFakeTimers()
+    try {
+      const cancel = vi.fn()
+      const response = new Response(new ReadableStream({ cancel }))
+      const pending = x402.fetchX402(x402.validateX402Fetch({ url }), { fetch: async () => response })
+      const assertion = expect(pending).rejects.toThrow('HTTP request timed out')
+      await vi.advanceTimersByTimeAsync(30000)
+      await assertion
+      expect(cancel).toHaveBeenCalledOnce()
+      expect(response.body!.locked).toBe(false)
+    } finally { vi.useRealTimers() }
+  })
+  it('accepts an exact 1 MiB response and reports complete byte count with capped text', async () => {
+    const response = await x402.fetchX402(x402.validateX402Fetch({ url }), { fetch: async () => new Response('a'.repeat(1048576), { headers: { 'content-type': 'text/plain' } }) })
+    expect(x402.x402HttpResult(response, false)).toMatchObject({ bytes: 1048576, truncated: true })
+  })
   it('refuses over-cap payments without constructing a signature request', async () => {
     await expect(prepare(required(), '0.009')).rejects.toThrow(/max_amount/)
   })
@@ -53,7 +87,15 @@ describe('x402 bounded HTTP and authorization', () => {
     await expect(x402.prepareX402(await x402.fetchX402({ url, method: 'GET', headers: {} }, { fetch: async () => new Response(JSON.stringify({ x402Version: 1, accepts: [] }), { status: 402, headers: { 'payment-required': 'invalid' } }) }), url, '1', payer)).rejects.toThrow(/payment-required/i)
   })
   it.each(['http://service.example', 'https://user:password@service.example', 'file:///tmp/a'])('refuses unsafe URL %s', url => expect(() => x402.validateX402Fetch({ url })).toThrow())
-  it.each(['host', 'content-length', 'connection', 'transfer-encoding', 'payment-signature', 'X-PAYMENT', 'proxy-authorization'])('refuses reserved header %s', name => expect(() => x402.validateX402Fetch({ url, headers: { [name]: 'x' } })).toThrow(/header/))
+  it.each(['host', 'content-length', 'connection', 'transfer-encoding', 'payment-signature', 'X-PAYMENT', 'proxy-authorization', 'proxy-connection'])('refuses reserved header %s', name => expect(() => x402.validateX402Fetch({ url, headers: { [name]: 'x' } })).toThrow(/header/))
+  it('preserves valid header names even when they match object prototype properties', async () => {
+    const input = x402.validateX402Fetch({ url, headers: JSON.parse('{"__proto__":"safe","constructor":"also safe"}') })
+    expect(Object.hasOwn(input.headers, '__proto__')).toBe(true)
+    await x402.fetchX402(input, { fetch: async (_url, init) => {
+      expect(new Headers(init?.headers).get('__proto__')).toBe('safe')
+      return new Response('ok')
+    } })
+  })
   it('bounds input headers/body, method, and total bytes', () => {
     for (const args of [{ headers: Object.fromEntries(Array.from({ length: 21 }, (_, i) => ['x-' + i, 'a'])) }, { headers: { x: 'é'.repeat(4096) } }, { body: 'x'.repeat(16385), method: 'POST' }, { method: 'OPTIONS' }, { body: 'a' }]) expect(() => x402.validateX402Fetch({ url, ...args })).toThrow()
   })
@@ -64,6 +106,11 @@ describe('x402 bounded HTTP and authorization', () => {
     expect(x402.x402HttpResult(response, false)).toMatchObject({ status: 302, location: 'http://private/', paid: false, truncated: true })
     expect(x402.x402HttpResult(response, false).body!.length).toBeLessThan(20000)
     expect(x402.x402HttpResult(await x402.fetchX402(x402.validateX402Fetch({ url }), { fetch: async () => new Response(new Uint8Array([0, 1, 255]), { headers: { 'content-type': 'application/octet-stream' } }) }), false)).toEqual({ status: 200, content_type: 'application/octet-stream', bytes: 3, paid: false })
+  })
+  it('caps returned UTF-8 without expanding a split multibyte character', async () => {
+    const result = x402.x402HttpResult(await x402.fetchX402(x402.validateX402Fetch({ url }), { fetch: async () => new Response('a' + '🌍'.repeat(3000), { headers: { 'content-type': 'text/plain' } }) }), false)
+    expect(new TextEncoder().encode(result.body).length).toBeLessThanOrEqual(8192)
+    expect(result.body).not.toContain('�')
   })
   it('cancels oversized streams and sanitizes network/body errors', async () => {
     let delivered = 0

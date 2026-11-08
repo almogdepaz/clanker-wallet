@@ -46,7 +46,7 @@ export function x402ContextError(value: unknown): string | undefined {
     if (typeof value[key] !== 'string' || (value[key] as string).length > cap || /[\u0000-\u001f\u007f]/.test(value[key] as string)) return `invalid x402 context field: ${key}`
   }
   try { if (new URL(value.resource_url as string).protocol !== 'https:') throw new Error() } catch { return 'invalid x402 resource_url' }
-  if (!/^eip155:[1-9][0-9]*$/.test(value.network as string) || !isChecksumAddress(value.pay_to as string) || !isChecksumAddress(value.asset as string) || !/^[1-9][0-9]{0,77}$/.test(value.amount as string) || BigInt(value.amount as string) >= 2n ** 256n) return 'invalid x402 payment context'
+  if (!/^eip155:[1-9][0-9]*$/.test(value.network as string) || !isChecksumAddress(value.pay_to as string) || !isChecksumAddress(value.asset as string) || !/^[0-9]{1,78}$/.test(value.amount as string) || BigInt(value.amount as string) <= 0n || BigInt(value.amount as string) >= 2n ** 256n) return 'invalid x402 payment context'
 }
 
 /** Agent credentials must not reach a different origin via redirects or a caller-supplied payment header. */
@@ -59,9 +59,9 @@ export function validateX402Fetch(args: Record<string, unknown>): X402FetchInput
   if (args.body !== undefined && (typeof args.body !== 'string' || bytes(args.body) > 16384 || method === 'GET')) throw new X402Error('body must be a string of at most 16384 bytes, and cannot accompany GET')
   const input = args.headers ?? {}
   if (!object(input) || Object.keys(input).length > 20) throw new X402Error('headers must be a string map with at most 20 entries')
-  const headers: Record<string, string> = {}
+  const headers: Record<string, string> = Object.create(null)
   let size = 0
-  const forbidden = new Set(['host', 'content-length', 'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade', 'payment-signature', 'x-payment'])
+  const forbidden = new Set(['host', 'content-length', 'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'proxy-connection', 'te', 'trailer', 'transfer-encoding', 'upgrade', 'payment-signature', 'x-payment'])
   for (const [name, value] of Object.entries(input)) {
     const lower = name.toLowerCase()
     if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name) || forbidden.has(lower) || typeof value !== 'string' || /[\r\n\u0000]/.test(value) || Object.hasOwn(headers, lower)) throw new X402Error('invalid or reserved HTTP header')
@@ -81,7 +81,10 @@ export async function fetchX402(input: X402FetchInput, options: ChainDataOptions
   void timedOut.catch(() => {})
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
   try {
-    const response = await (options.fetch ?? globalThis.fetch)(input.url, { method: input.method, headers: { ...input.headers, ...(paymentHeader && { 'PAYMENT-SIGNATURE': paymentHeader }) }, ...(input.body !== undefined && { body: input.body }), redirect: 'manual', signal: abort.signal })
+    // Tuple entries preserve names such as __proto__ that native record-to-Headers conversion can drop.
+    const headers: [string, string][] = Object.entries(input.headers)
+    if (paymentHeader) headers.push(['PAYMENT-SIGNATURE', paymentHeader])
+    const response = await (options.fetch ?? globalThis.fetch)(input.url, { method: input.method, headers, ...(input.body !== undefined && { body: input.body }), redirect: 'manual', signal: abort.signal })
     const content_type = (response.headers.get('content-type') ?? '').slice(0, 256)
     const textual = /^(text\/|application\/(?:[\w.+-]*\+)?(?:json|xml)(?:;|$)|application\/(?:javascript|x-www-form-urlencoded)(?:;|$))/i.test(content_type)
     const decoder = new TextDecoder()
@@ -125,9 +128,9 @@ export async function prepareX402(response: X402HttpResponse, fetchedUrl: string
   })
   const selected = required.accepts.find((r: unknown) => {
     if (!object(r) || r.scheme !== 'exact' || typeof r.network !== 'string' || !/^eip155:[1-9][0-9]*$/.test(r.network) || !(SIGN_CHAIN_IDS as readonly number[]).includes(Number(r.network.slice(7)))) return false
-    if (typeof r.asset !== 'string' || !isChecksumAddress(r.asset) || typeof r.payTo !== 'string' || !isChecksumAddress(r.payTo) || typeof r.amount !== 'string' || !/^[1-9][0-9]{0,77}$/.test(r.amount) || BigInt(r.amount) >= 2n ** 256n) return false
+    if (typeof r.asset !== 'string' || !isChecksumAddress(r.asset) || typeof r.payTo !== 'string' || !isChecksumAddress(r.payTo) || typeof r.amount !== 'string' || !/^[0-9]{1,78}$/.test(r.amount) || BigInt(r.amount) <= 0n || BigInt(r.amount) >= 2n ** 256n) return false
     if (!Number.isSafeInteger(r.maxTimeoutSeconds) || (r.maxTimeoutSeconds as number) <= 0 || (r.maxTimeoutSeconds as number) > 86400 || !object(r.extra)) return false
-    return (r.extra.assetTransferMethod === undefined || r.extra.assetTransferMethod === 'eip3009') && (r.extra.paymentFlow === undefined || r.extra.paymentFlow === 'authorization') && typeof r.extra.name === 'string' && !!r.extra.name && r.extra.name.length <= 128 && typeof r.extra.version === 'string' && !!r.extra.version && r.extra.version.length <= 32
+    return (r.extra.assetTransferMethod === undefined || r.extra.assetTransferMethod === 'eip3009') && (r.extra.paymentFlow === undefined || r.extra.paymentFlow === 'authorization') && typeof r.extra.name === 'string' && r.extra.name.length <= 128 && typeof r.extra.version === 'string' && r.extra.version.length <= 32
   }) as X402Requirement | undefined
   if (!selected) throw new X402Error('no supported exact EVM eip3009 payment requirement', offered)
   if (bytes(JSON.stringify(selected)) > MAX_ECHO) throw new X402Error('accepted payment echo exceeds 8192 bytes')
@@ -165,7 +168,7 @@ export function x402HttpResult(response: X402HttpResponse, paid: boolean): X402H
   if (response.text !== undefined) {
     const data = encoder.encode(response.text)
     truncated = data.length > MAX_RESULT_BODY
-    body = new TextDecoder().decode(data.subarray(0, MAX_RESULT_BODY))
+    body = new TextDecoder().decode(data.subarray(0, MAX_RESULT_BODY), { stream: truncated })
   }
   const result: X402HttpResult = { status: response.status, content_type: response.content_type, bytes: response.bytes, paid, ...(body !== undefined && { body }), ...(truncated && { truncated }), ...(response.location !== undefined && { location: response.location }) }
   if (paid && response.payment_response !== undefined) {

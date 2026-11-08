@@ -100,6 +100,25 @@ describe('x402 tools', () => {
       expect(fetch).toHaveBeenCalledTimes(1)
     } finally { fetch.mockRestore() }
   })
+  it('retains the final result when an already-started paid retry outlives the approval deadline', async () => {
+    const h = await human(req => ({ request_id: req.request_id, status: 'approved', signature: '0x' + 'ab'.repeat(65) }))
+    const { call } = server({ evm: evmPairing(h.room) })
+    let started!: () => void, release!: () => void
+    const retryStarted = new Promise<void>(r => { started = r })
+    const blocked = new Promise<void>(r => { release = r })
+    const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
+      if (new Headers(init?.headers).has('payment-signature')) { started(); await blocked; return new Response('paid', { headers: { 'content-type': 'text/plain' } }) }
+      return new Response('{}', { status: 402, headers: { 'payment-required': Buffer.from(JSON.stringify({ x402Version: 2, resource: { url: 'https://service.example/paid' }, accepts: [{ scheme: 'exact', network: 'eip155:8453', amount: '10000', asset: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', payTo: TO, maxTimeoutSeconds: 60, extra: { name: 'USD Coin', version: '2' } }] })).toString('base64') } })
+    })
+    try {
+      const sent = await call('x402_fetch', { url: 'https://service.example/paid', max_amount: '0.01', reason: 'read' })
+      await retryStarted
+      vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(Date.now() + 601000)
+      expect((await call('get_request', { request_id: sent.body.request_id })).body.status).toBe('pending')
+      release()
+      expect((await call('get_request', { request_id: sent.body.request_id, wait_seconds: 1 })).body).toMatchObject({ status: 'approved', result: { paid: true } })
+    } finally { release(); vi.useRealTimers(); fetch.mockRestore() }
+  })
   it('waits for explicit human signature, retries only once and caches the result', async () => {
     const h = await human(req => ({ request_id: req.request_id, status: 'approved', signature: '0x' + 'ab'.repeat(65) }))
     const { call } = server({ evm: evmPairing(h.room) })
