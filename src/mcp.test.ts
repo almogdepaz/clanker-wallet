@@ -83,6 +83,28 @@ const btcArgs = { family: 'bitcoin', network: 'testnet', to: BTC_TEST, amount: '
 const chiaArgs = { family: 'chia', network: 'testnet11', to: TXCH, amount: '1000', reason: 'pay' }
 const sentTo = (room: string) => relay.received.filter((m) => m.type === 'message' && m.room === room)
 
+describe('signature tools', () => {
+  it.each(['request_sign_message', 'request_sign_typed_data'])('%s returns review URL then signature, never tx_hash', async name => {
+    const signature = '0x' + 'ab'.repeat(65)
+    const h = await human(req => ({ request_id: req.request_id, status: 'approved', signature }))
+    const { call } = server({ evm: evmPairing(h.room) })
+    const payload = name === 'request_sign_message' ? { message: '0x00ff' } : { typed_data: { domain: { chainId: 1 }, types: { EIP712Domain: [{ name: 'chainId', type: 'uint256' }], Mail: [] }, primaryType: 'Mail', message: {} } }
+    const sent = await call(name, { chain_id: 1, reason: 'login', ...payload })
+    expect(sent.isError).toBe(false)
+    expect(sent.body.review_url).toContain('?request=')
+    expect(await call('get_request', { request_id: sent.body.request_id, wait_seconds: 1 })).toEqual({ isError: false, body: { request_id: sent.body.request_id, status: 'approved', signature } })
+    expect(h.requests[0]).toHaveProperty('sign')
+  })
+  it('refuses malformed and over-budget payloads without delivery', async () => {
+    const h = await human()
+    const { call } = server({ evm: evmPairing(h.room) })
+    for (const args of [{ chain_id: 2, message: 'hello' }, { chain_id: 1, message: '0x0' }, { chain_id: 1, message: 'a'.repeat(32768) }]) {
+      expect((await call('request_sign_message', { reason: 'test', ...args })).isError).toBe(true)
+    }
+    expect(h.requests).toEqual([])
+  })
+})
+
 describe('mcp protocol', () => {
   const { mcp, rpc } = server({})
 
@@ -130,7 +152,7 @@ describe('mcp protocol', () => {
 
   it('lists the tools with object schemas, stating human approval and integer-string amounts', async () => {
     const { result } = await rpc('tools/list')
-    expect(result.tools.map((t: any) => t.name)).toEqual(['request_evm_tx', 'request_transfer', 'request_token_transfer', 'get_request', 'get_balance', 'get_tx_status', 'list_pairings'])
+    expect(result.tools.map((t: any) => t.name)).toEqual(['request_evm_tx', 'request_transfer', 'request_token_transfer', 'request_sign_message', 'request_sign_typed_data', 'get_request', 'get_balance', 'get_tx_status', 'list_pairings'])
     for (const tool of result.tools) expect(tool.inputSchema.type).toBe('object')
     const byName = Object.fromEntries(result.tools.map((t: any) => [t.name, t]))
     for (const name of ['request_evm_tx', 'request_transfer']) {
@@ -168,7 +190,7 @@ describe('mcp protocol', () => {
     const annotations = Object.fromEntries(result.tools.map((t: any) => [t.name, t.annotations]))
     const request = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true }
     const read = { readOnlyHint: true, openWorldHint: false }
-    expect(annotations).toEqual({ request_evm_tx: request, request_transfer: request, request_token_transfer: request, get_request: read, get_balance: { ...read, openWorldHint: true }, get_tx_status: { ...read, openWorldHint: true }, list_pairings: read })
+    expect(annotations).toEqual({ request_evm_tx: request, request_transfer: request, request_token_transfer: request, request_sign_message: request, request_sign_typed_data: request, get_request: read, get_balance: { ...read, openWorldHint: true }, get_tx_status: { ...read, openWorldHint: true }, list_pairings: read })
   })
 })
 

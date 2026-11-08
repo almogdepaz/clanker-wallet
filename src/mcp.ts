@@ -1,5 +1,6 @@
 import { getBalance, getTxStatus } from './reads.js'
 import { buildTokenTransfer, ChainDataError, rpcUrlsFromJson, type ChainDataOptions } from './chain-data.js'
+import { validateSign } from './sign.js'
 import { RelayError, type ClankerWallet } from './client.js'
 import type { TxContext } from './types.js'
 import { InvalidTxError, validateTransfer, validateTx } from './validate.js'
@@ -141,6 +142,45 @@ export const MCP_TOOLS = [
     annotations: REQUEST_HINTS,
   },
   {
+    name: 'request_sign_message',
+    description: 'Ask the human to sign an EVM message (personal_sign) in their own wallet. ' +
+      'Returns { request_id, review_url }; show review_url to the user, then call get_request for the signature. ' +
+      'Signatures can authorize spending (permits): explain why one is needed. Every signature needs human review; eth_sign is not available.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        chain_id: { type: 'integer', description: 'supported EVM chain id' },
+        message: { type: 'string', description: 'UTF-8 text or 0x-prefixed even-length hex bytes; at most 32768 compact JSON UTF-8 bytes' },
+        ...CONTEXT_PROPERTIES,
+        ...FROM_PROPERTY,
+      },
+      required: ['chain_id', 'message', 'reason'],
+    },
+    annotations: REQUEST_HINTS,
+  },
+  {
+    name: 'request_sign_typed_data',
+    description: 'Ask the human to sign parsed EIP-712 typed data (eth_signTypedData_v4) in their own wallet. ' +
+      'Returns { request_id, review_url }; show review_url to the user, then call get_request for the signature. ' +
+      'Signatures can authorize spending (permits): explain why one is needed. Every signature needs human review; eth_sign is not available.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        chain_id: { type: 'integer', description: 'supported EVM chain id; must equal domain.chainId when present' },
+        typed_data: {
+          type: 'object',
+          description: 'parsed EIP-712 object, not a JSON string; at most 32768 compact JSON UTF-8 bytes',
+          properties: { domain: { type: 'object' }, types: { type: 'object' }, primaryType: { type: 'string' }, message: { type: 'object' } },
+          required: ['domain', 'types', 'primaryType', 'message'],
+        },
+        ...CONTEXT_PROPERTIES,
+        ...FROM_PROPERTY,
+      },
+      required: ['chain_id', 'typed_data', 'reason'],
+    },
+    annotations: REQUEST_HINTS,
+  },
+  {
     name: 'get_request',
     description: 'Get the outcome of a request: pending, approved (with tx_hash; a chia send may have none, so check the recipient\'s balance), rejected, failed (with error), unknown (with error) or expired. ' +
       `The human may take minutes to answer: pass wait_seconds (at most ${MAX_WAIT_SECONDS}) to wait for it, and call again while it is pending. ` +
@@ -150,7 +190,7 @@ export const MCP_TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        request_id: { type: 'string', description: 'from request_evm_tx, request_transfer or request_token_transfer' },
+        request_id: { type: 'string', description: 'from any request tool, including request_sign_message or request_sign_typed_data' },
         wait_seconds: { type: 'number', minimum: 0, maximum: MAX_WAIT_SECONDS, description: 'wait up to this long for an answer (default 0)' },
       },
       required: ['request_id'],
@@ -198,7 +238,7 @@ export const MCP_TOOLS = [
 ]
 
 const INSTRUCTIONS = 'clanker-wallet sends transaction requests to a human, who approves or rejects each one in their own wallet; ' +
-  'you never hold keys. Call list_pairings to see which chains you can use, request_evm_tx, request_transfer or request_token_transfer to ask, ' +
+  'you never hold keys. Call list_pairings to see which chains you can use, request_evm_tx, request_transfer, request_token_transfer, request_sign_message or request_sign_typed_data to ask, ' +
   'and get_request (with wait_seconds) until the request is no longer pending.'
 
 /** what get_request reports, in the order the docs list them */
@@ -212,10 +252,11 @@ interface RequestRecord {
   status: RequestStatus
   expiresAt: number
   tx_hash?: string
+  signature?: string
   error?: string
   /** resolves when the status leaves pending */
   settled: Promise<void>
-  settle: (status: Exclude<RequestStatus, 'pending'>, detail?: { tx_hash?: string; error?: string }) => void
+  settle: (status: Exclude<RequestStatus, 'pending'>, detail?: { tx_hash?: string; signature?: string; error?: string }) => void
 }
 
 /** a JSON-RPC error answered to the client */
@@ -297,7 +338,7 @@ export function createMcpServer(options: McpServerOptions): { handleLine: (line:
    * the wallet sends it, or a tool error when it fails first (bad input, `from` not the paired wallet, unreachable relay,
    * join timeout, cancelled)
    */
-  function submit(family: RequestFamily, from: string | undefined, cancelled: AbortSignal, send: (wallet: ClankerWallet, limits: WalletLimits) => Promise<string | undefined>): Promise<ToolResult> {
+  function submit(family: RequestFamily, from: string | undefined, cancelled: AbortSignal, send: (wallet: ClankerWallet, limits: WalletLimits) => Promise<string | undefined>, signatureRequest = false): Promise<ToolResult> {
     if (cancelled.aborted) return Promise.resolve(toolError('request cancelled before sending; nothing was sent'))
     const pairing = options.loadPairing(family)
     if (!pairing) return Promise.resolve(toolError(NOT_PAIRED[family]))
@@ -325,7 +366,7 @@ export function createMcpServer(options: McpServerOptions): { handleLine: (line:
       wallet.on('response', (response) => { answered = response })
 
       send(wallet, { timeout_ms: ttl, join_timeout_ms: joinTimeout, signal: unsent.signal }).then(
-        (txHash) => record!.settle('approved', { tx_hash: txHash }),
+        (result) => record!.settle('approved', signatureRequest ? { signature: result } : { tx_hash: result }),
         (err: unknown) => {
           const message = err instanceof Error ? err.message : String(err)
           if (!record) {
@@ -408,9 +449,9 @@ export function createMcpServer(options: McpServerOptions): { handleLine: (line:
     // a fallback for an expiry timer that runs late (a busy process): it only marks expired once the clock has passed expires_at
     if (record.status === 'pending' && Date.now() >= record.expiresAt) record.settle('expired')
 
-    const { status, tx_hash, error } = record
+    const { status, tx_hash, signature, error } = record
     if (status === 'pending') return toolResult({ request_id, review_url: reviewUrl(request_id), status, expires_at: new Date(record.expiresAt).toISOString() })
-    return toolResult({ request_id, status, ...(tx_hash !== undefined && { tx_hash }), ...(error !== undefined && { error }) })
+    return toolResult({ request_id, status, ...(tx_hash !== undefined && { tx_hash }), ...(signature !== undefined && { signature }), ...(error !== undefined && { error }) })
   }
 
   function listPairings(): ToolResult {
@@ -422,6 +463,20 @@ export function createMcpServer(options: McpServerOptions): { handleLine: (line:
   }
 
   const TOOL_HANDLERS: Record<string, (args: Record<string, unknown>, cancelled: AbortSignal) => ToolResult | Promise<ToolResult>> = {
+    request_sign_message: (args, cancelled) => {
+      const context = contextFrom(args)
+      const from = fromArg(args)
+      const { chain_id, sign } = validateSign(args.chain_id, { method: 'personal_sign', message: args.message })
+      if (sign.method !== 'personal_sign') throw new ToolInputError('invalid method')
+      return submit('evm', from, cancelled, (wallet, limits) => wallet.requestSignMessage({ chain_id, message: sign.message, context, ...limits }), true)
+    },
+    request_sign_typed_data: (args, cancelled) => {
+      const context = contextFrom(args)
+      const from = fromArg(args)
+      const { chain_id, sign } = validateSign(args.chain_id, { method: 'eth_signTypedData_v4', typed_data: args.typed_data })
+      if (sign.method !== 'eth_signTypedData_v4') throw new ToolInputError('invalid method')
+      return submit('evm', from, cancelled, (wallet, limits) => wallet.requestSignTypedData({ chain_id, typed_data: sign.typed_data, context, ...limits }), true)
+    },
     request_evm_tx: requestEvmTx,
     request_transfer: requestTransfer,
     request_token_transfer: requestTokenTransfer,
@@ -526,6 +581,7 @@ function newRecord(request_id: string, expiresAt: number): RequestRecord {
       if (record.status !== 'pending') return
       record.status = status
       record.tx_hash = detail.tx_hash
+      record.signature = detail.signature
       record.error = detail.error
       resolveSettled()
     },
