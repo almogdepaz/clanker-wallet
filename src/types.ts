@@ -33,9 +33,34 @@ export interface TxRequest {
 /** response from the human (decrypted) */
 export interface TxResponse {
   request_id: string
-  status: 'approved' | 'rejected'
+  status: 'approved' | 'rejected' | 'failed'
   tx_hash?: string
+  signature?: string
   error?: string
+}
+
+/** Parsed EIP-712 data. JSON strings and bigint values are not wire data. */
+export interface SignTypedData {
+  domain: Record<string, unknown>
+  types: Record<string, { name: string; type: string }[]>
+  primaryType: string
+  message: Record<string, unknown>
+}
+
+export type SignPayload =
+  | { method: 'personal_sign'; message: string }
+  | { method: 'eth_signTypedData_v4'; typed_data: SignTypedData }
+
+export interface SignRequest extends Omit<TxRequest, 'transaction'> {
+  sign: SignPayload
+}
+
+export interface RequestSignMessageOptions extends Omit<RequestTxOptions, 'transaction'> {
+  message: string
+}
+
+export interface RequestSignTypedDataOptions extends Omit<RequestTxOptions, 'transaction'> {
+  typed_data: SignTypedData
 }
 
 /** wire format sent over relay */

@@ -2,7 +2,7 @@ import { decodeChiaAddress, isStandardSegwitAddress } from './bech32.js'
 import { keccak256 } from './keccak.js'
 import type { Transaction, Transfer, TransferFamily, TransferInput, TxInput } from './types.js'
 
-export type TxField = 'chain_id' | 'to' | 'value' | 'data' | 'chain_family' | 'chain_network' | 'asset' | 'amount' | 'fee'
+export type TxField = 'sign' | 'message' | 'typed_data' | 'chain_id' | 'to' | 'value' | 'data' | 'chain_family' | 'chain_network' | 'asset' | 'amount' | 'fee'
 
 /** a tx request field failed validation; nothing was sent */
 export class InvalidTxError extends Error {
