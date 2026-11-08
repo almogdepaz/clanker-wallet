@@ -183,10 +183,48 @@ Claude Desktop (`claude_desktop_config.json`), Cursor (`~/.cursor/mcp.json`), an
 | `request_token_transfer` | `chain_id`, `to`, `amount` (positive human decimal string), `reason`, optional `token` (listed symbol or contract address; omitted/native symbol = native coin), `from`, `urgency`, `expected_outcome` | `request_id`, `review_url`, pending status and expiry; existing EVM request, no signing here |
 | `request_sign_message` | `chain_id`, `message` (UTF-8 text or 0x-prefixed even-length hex bytes), `reason`, optional `from`, `urgency`, `expected_outcome` | `request_id`, `review_url`, pending status and expiry; `get_request` returns `signature` on approval |
 | `request_sign_typed_data` | `chain_id`, `typed_data` (parsed EIP-712 object), `reason`, optional `from`, `urgency`, `expected_outcome` | as above; human signs in their wallet |
+| `x402_fetch` | `url` (HTTPS), `max_amount` (positive decimal token units), `reason`, optional `method`, `headers`, `body` | free HTTP result, or pending `request_id` and `review_url`; the user signs each payment before one paid retry |
 | `get_request` | `request_id`, optional `wait_seconds` (at most 50) | `status`: `pending`, `approved` (with `signature` for signing or `tx_hash` for transactions; a chia send may have none), `rejected`, `failed` (with `error`), `unknown` (with `error`) or `expired` |
 | `get_balance` | `family`, `address` (any recipient), EVM `chain_id`, bitcoin/chia `network`, optional EVM `token` (listed symbol or address) | exact `raw_balance`, human `balance`, `asset`, `decimals`; bitcoin also confirmed/mempool deltas; chia recipient puzzle-hash unspent coins only |
 | `get_tx_status` | `family` (evm/bitcoin), `tx_hash`, EVM `chain_id` or bitcoin `network` | receipt `status` and `confirmations`; missing EVM receipt is `pending_or_unknown`, missing bitcoin hash is `unknown` |
 | `list_pairings` | none | `agent_id`, `fingerprint`, and the paired families (`evm`, `bitcoin`, `chia`) with network, wallet and mode |
+
+### x402 paid HTTP resources
+
+Use `x402_fetch` with an HTTPS `url`, required `max_amount` and `reason`. Optional `method`
+is GET (default), POST, PUT, PATCH or DELETE; `headers` is a string map and `body` is a string.
+`max_amount` is in decimal token units, e.g. `"0.10"`, not atomic units. Token-list or on-chain
+decimals determine the ceiling; server-provided decimals are never trusted and amounts are never rounded.
+A non-402 response returns `paid: false` without asking for a signature.
+
+For paid resources, the user signs each payment in their wallet: no auto-pay or auto-approve.
+Support is x402 v2 exact EVM eip3009 only (`TransferWithAuthorization`); v1 is not supported.
+Permit2, ERC-7710, upto and non-EVM payments are unsupported. A payment above `max_amount` is refused.
+The tool returns `request_id`, `review_url` and pending status. Show the URL to the user and use
+`get_request` to wait. Each payment has a 10-minute approval window; the authorization also allows the
+server's settlement timeout. An expired authorization is never retried.
+
+The card labels resource, description and service claims as server-provided and unverified.
+Decoded signed amount, recipient, token and chain remain the source of truth. Conflicting claims require
+the existing extra confirmation. Server resource URLs that differ from the fetched URL produce a warning.
+
+After approval there is exactly one paid retry with the original method, headers and body.
+`get_request` returns `result` containing HTTP `status`, `content_type`, capped text `body`,
+`bytes`, `paid: true` and optional `settlement` (`success`, `transaction`, `network`, `payer`,
+`errorReason`). Binary responses omit `body`; long text sets `truncated: true`. A second 402 reports
+payment failure without another signature. `settlement_pending` reports the transaction hash as pending;
+check it on-chain before deciding what to do next. These are server settlement claims, not independent
+confirmation. Repeated polls return the stored result. A hosted connector crash after claiming the retry
+reports `outcome unknown; not retried`: do not automatically repeat a possibly paid operation.
+A local MCP restart forgets requests, so ask the user before resubmitting.
+
+Requests do not follow redirects: 3xx returns `location`. Each HTTP attempt has a 30-second timeout and
+a 1 MiB response limit. Returned text is capped at 8192 UTF-8 bytes; oversized HTTP responses are refused,
+not silently read in full. Input allows at most 20 headers / 8192 bytes and a 16384-byte body (no GET body).
+Host, content-length, hop-by-hop and payment headers are refused. Never include secrets in the URL or reason.
+The hosted connector only fetches public hosts and counts both attempts against its shared 60-per-minute
+lookup budget; signature requests also use the usual request budget. Retry credentials are deleted after
+completion, rejection, failure or expiry. Headers and bodies are not logged.
 
 ### EVM signature requests
 
