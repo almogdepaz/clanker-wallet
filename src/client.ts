@@ -201,7 +201,8 @@ export class ClankerWallet extends TypedEmitter {
     const { chain_id, sign } = validateSign(options.chain_id, input)
     const request: SignRequest = {
       request_id: newRequestId(), agent_id: this.agentId, timestamp: new Date().toISOString(),
-      chain_id, sign, context: options.context, signature: '',
+      // Detach context too: caller mutation while joining must not invalidate the signed request.
+      chain_id, sign, context: options.context === undefined ? undefined : JSON.parse(JSON.stringify(options.context)), signature: '',
     }
     request.signature = signMessage(JSON.stringify(request), this.signingSecretKey)
     checkSignRequestSize(request)

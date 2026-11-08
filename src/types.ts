@@ -33,7 +33,7 @@ export interface TxRequest {
 /** response from the human (decrypted) */
 export interface TxResponse {
   request_id: string
-  status: 'approved' | 'rejected'
+  status: 'approved' | 'rejected' | 'failed'
   tx_hash?: string
   signature?: string
   error?: string

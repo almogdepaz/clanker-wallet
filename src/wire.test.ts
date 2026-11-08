@@ -235,11 +235,42 @@ describe('signature request wire format', () => {
   test.each([undefined, '0x1234', 'ab'.repeat(65)])('refuses an approval without a valid signature: %s', async signature => {
     await expect(capture(agent => agent.requestSignMessage({ chain_id: 1, message: 'hello', timeout_ms: 1000 }), { wallet: WALLET }, { status: 'approved', signature, tx_hash: '0xabc' })).rejects.toThrow(/signature/)
   })
-  test('maximum payload fits the relay frame after signing, encryption, base64 and envelope', async () => {
-    const { outer } = await capture(agent => agent.requestSignMessage({ chain_id: 1, message: 'a'.repeat(32766), context: { reason: 'x'.repeat(6000) }, timeout_ms: 1000 }), { wallet: WALLET, mode: 'managed' }, { status: 'approved', signature })
+  test('maximum payload and whole request fit the relay frame after signing, encryption, base64 and envelope', async () => {
+    freeze()
+    const message = 'a'.repeat(32766)
+    const shell = { request_id: 'req_1767323045678_4fzzzx', agent_id: 'agent_13be4feaeaf2', timestamp: '2026-01-02T03:04:05.678Z', chain_id: 1, sign: { method: 'personal_sign', message }, context: { reason: '' }, signature: 'a'.repeat(88) }
+    const reason = 'x'.repeat(40000 - new TextEncoder().encode(JSON.stringify(shell)).length)
+    const { outer, plaintext } = await capture(agent => agent.requestSignMessage({ chain_id: 1, message, context: { reason }, timeout_ms: 1000 }), { wallet: WALLET, mode: 'managed' }, { status: 'approved', signature })
+    expect(new TextEncoder().encode(plaintext).length).toBe(40000)
     const sent = relay.received.filter(m => m.type === 'message' && m.room === HUMAN_HEX && JSON.parse(m.payload).sender_pubkey !== HUMAN_HEX).at(-1)
     expect(new TextEncoder().encode(JSON.stringify(sent)).length).toBeLessThanOrEqual(65536)
     expect(outer).not.toHaveProperty('simulate')
+  })
+  test('snapshots original typed payload and context before waiting for relay join', async () => {
+    const { plaintext } = await capture(agent => {
+      const data = JSON.parse(JSON.stringify(typed_data))
+      const context = { reason: 'original reason' }
+      const result = agent.requestSignTypedData({ chain_id: 1, typed_data: data, context, timeout_ms: 1000 })
+      data.message.text = 'changed after request'
+      context.reason = 'changed after request'
+      return result
+    }, { wallet: WALLET }, { status: 'approved', signature })
+    const req = JSON.parse(plaintext)
+    expect(req.sign.typed_data).toEqual(typed_data)
+    expect(req.context.reason).toBe('original reason')
+    expect(verifySignature(JSON.stringify({ ...req, signature: '' }), req.signature, fromHex(AGENT_SIGNING_PUBKEY))).toBe(true)
+  })
+  test.each(['requestSignMessage', 'requestSignTypedData'] as const)('%s handles cancellation before sending', async method => {
+    const agent = new ClankerWallet()
+    await expect(method === 'requestSignMessage' ? agent.requestSignMessage({ chain_id: 1, message: 'hello' }) : agent.requestSignTypedData({ chain_id: 1, typed_data })).rejects.toThrow(/not paired/)
+    const room = toHex(nacl.box.keyPair().publicKey)
+    agent.pair(JSON.stringify({ version: 1, pubkey: room, relay: relay.url }))
+    const options = { chain_id: 1, signal: AbortSignal.abort() }
+    await expect(method === 'requestSignMessage' ? agent.requestSignMessage({ ...options, message: 'hello' }) : agent.requestSignTypedData({ ...options, typed_data })).rejects.toThrow(/cancelled/)
+    expect(relay.received.filter(m => m.room === room)).toEqual([])
+  })
+  test.each([{ status: 'rejected' }, { status: 'failed', error: 'wallet cancelled' }])('does not resolve rejected/failed answers: %s', async answer => {
+    await expect(capture(agent => agent.requestSignMessage({ chain_id: 1, message: 'hello', timeout_ms: 1000 }), { wallet: WALLET }, answer)).rejects.toThrow(/rejected by human|wallet cancelled/)
   })
   test.each(['bitcoin', 'chia'])('refuses %s before connection', async chain_family => {
     const agent = new ClankerWallet()

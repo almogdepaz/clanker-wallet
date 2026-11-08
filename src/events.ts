@@ -3,7 +3,7 @@ export type EventMap = {
   connecting: { relay: string }
   connected: { room: string }
   request_sent: { request_id: string }
-  response: { request_id: string; status: 'approved' | 'rejected'; tx_hash?: string; signature?: string }
+  response: { request_id: string; status: 'approved' | 'rejected' | 'failed'; tx_hash?: string; signature?: string }
   error: { message: string }
   disconnected: {}
 }
