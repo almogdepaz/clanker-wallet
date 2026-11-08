@@ -3,6 +3,7 @@ import { TypedEmitter } from './events.js'
 import type { AgentEnvelope, PairingData, RequestSignMessageOptions, RequestSignTypedDataOptions, SignPayload, SignRequest, RequestTransferOptions, RequestTxOptions, TransferRequest, TxRequest, TxResponse } from './types.js'
 import { InvalidTxError, validateTransfer, validateTx } from './validate.js'
 
+import { x402ContextError } from './x402.js'
 import { checkSignRequestSize, isEoaSignature, validateSign } from './sign.js'
 
 const DEFAULT_TIMEOUT_MS = 3_600_000 // 1 hour
@@ -199,6 +200,8 @@ export class ClankerWallet extends TypedEmitter {
     if (!this.pairing) throw new Error('not paired — call pair() first')
     if (this.pairing.chainFamily && this.pairing.chainFamily !== 'evm') throw new InvalidTxError('chain_family', 'signatures require an EVM pairing')
     const { chain_id, sign } = validateSign(options.chain_id, input)
+    const contextError = options.context?.x402 === undefined ? undefined : x402ContextError(options.context.x402)
+    if (contextError) throw new InvalidTxError('sign', contextError)
     const request: SignRequest = {
       request_id: newRequestId(), agent_id: this.agentId, timestamp: new Date().toISOString(),
       // Detach context too: caller mutation while joining must not invalidate the signed request.

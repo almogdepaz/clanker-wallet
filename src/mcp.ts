@@ -1,4 +1,5 @@
 import { getBalance, getTxStatus } from './reads.js'
+import { X402Error, X402_APPROVAL_MS, validateX402Fetch, fetchX402, prepareX402, retryX402, x402HttpResult, type X402HttpResult } from './x402.js'
 import { buildTokenTransfer, ChainDataError, rpcUrlsFromJson, type ChainDataOptions } from './chain-data.js'
 import { validateSign } from './sign.js'
 import { RelayError, type ClankerWallet } from './client.js'
@@ -181,6 +182,23 @@ export const MCP_TOOLS = [
     annotations: REQUEST_HINTS,
   },
   {
+    name: 'x402_fetch',
+    description: 'Fetch an HTTPS resource. For x402 v2 exact EVM eip3009 payments, the human signs every payment in their wallet. max_amount is a decimal token-unit ceiling, never an auto-pay budget. Returns a free HTTP result or a pending request with review_url; get_request returns the single paid retry result. No redirects are followed.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'absolute HTTPS URL, without credentials' },
+        method: { type: 'string', enum: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'], default: 'GET' },
+        headers: { type: 'object', additionalProperties: { type: 'string' }, description: 'at most 20 headers and 8192 bytes; no host, content-length, hop-by-hop or payment headers' },
+        body: { type: 'string', description: 'at most 16384 UTF-8 bytes; not allowed with GET' },
+        max_amount: { type: 'string', description: 'required positive decimal token-unit ceiling, e.g. "0.10"; trusted token decimals, never rounded' },
+        reason: CONTEXT_PROPERTIES.reason,
+      },
+      required: ['url', 'max_amount', 'reason'],
+    },
+    annotations: REQUEST_HINTS,
+  },
+  {
     name: 'get_request',
     description: 'Get the outcome of a request: pending, approved (with signature for signing, or tx_hash for transactions; a chia send may have none, so check the recipient\'s balance), rejected, failed (with error), unknown (with error) or expired. ' +
       `The human may take minutes to answer: pass wait_seconds (at most ${MAX_WAIT_SECONDS}) to wait for it, and call again while it is pending. ` +
@@ -254,9 +272,11 @@ interface RequestRecord {
   tx_hash?: string
   signature?: string
   error?: string
+  result?: X402HttpResult
+  retrying?: boolean
   /** resolves when the status leaves pending */
   settled: Promise<void>
-  settle: (status: Exclude<RequestStatus, 'pending'>, detail?: { tx_hash?: string; signature?: string; error?: string }) => void
+  settle: (status: Exclude<RequestStatus, 'pending'>, detail?: { tx_hash?: string; signature?: string; error?: string; result?: X402HttpResult }) => void
 }
 
 /** a JSON-RPC error answered to the client */
@@ -338,14 +358,14 @@ export function createMcpServer(options: McpServerOptions): { handleLine: (line:
    * the wallet sends it, or a tool error when it fails first (bad input, `from` not the paired wallet, unreachable relay,
    * join timeout, cancelled)
    */
-  function submit(family: RequestFamily, from: string | undefined, cancelled: AbortSignal, send: (wallet: ClankerWallet, limits: WalletLimits) => Promise<string | undefined>, signatureRequest = false): Promise<ToolResult> {
+  function submit(family: RequestFamily, from: string | undefined, cancelled: AbortSignal, send: (wallet: ClankerWallet, limits: WalletLimits) => Promise<string | undefined>, signatureRequest = false, requestTtl = ttl, onApproved?: (signature: string) => Promise<X402HttpResult>): Promise<ToolResult> {
     if (cancelled.aborted) return Promise.resolve(toolError('request cancelled before sending; nothing was sent'))
     const pairing = options.loadPairing(family)
     if (!pairing) return Promise.resolve(toolError(NOT_PAIRED[family]))
     const mismatch = fromMismatch(family, from, pairing)
     if (mismatch) return Promise.resolve(mismatch)
     const wallet = options.wallet(pairing)
-    const expiresAt = Date.now() + ttl
+    const expiresAt = Date.now() + requestTtl
     // a cancel stops the wallet only before it sends: once delivered, the human can still approve, so keep waiting
     const unsent = new AbortController()
 
@@ -355,7 +375,7 @@ export function createMcpServer(options: McpServerOptions): { handleLine: (line:
       // this timer decides expiry, not a Date.now() check: timers can fire a millisecond before the clock reaches their
       // target. it is set before the wallet's own timer of the same ttl, and node runs equal delays in the order they
       // were set, so the request is expired before the wallet's timeout rejection arrives
-      const expiry = setTimeout(() => record?.settle('expired'), ttl)
+      const expiry = setTimeout(() => record?.settle('expired'), requestTtl)
       cancelled.addEventListener('abort', () => { if (!record) unsent.abort() })
       wallet.on('request_sent', ({ request_id }) => {
         record = newRecord(request_id, expiresAt)
@@ -365,8 +385,16 @@ export function createMcpServer(options: McpServerOptions): { handleLine: (line:
       })
       wallet.on('response', (response) => { answered = response })
 
-      send(wallet, { timeout_ms: ttl, join_timeout_ms: joinTimeout, signal: unsent.signal }).then(
-        (result) => record!.settle('approved', signatureRequest ? { signature: result } : { tx_hash: result }),
+      send(wallet, { timeout_ms: requestTtl, join_timeout_ms: joinTimeout, signal: unsent.signal }).then(
+        async (result) => {
+          if (record!.status !== 'pending') return
+          clearTimeout(expiry)
+          if (onApproved) {
+            record!.retrying = true
+            try { record!.settle('approved', { result: await onApproved(result!) }) }
+            catch (err) { record!.settle('failed', { error: err instanceof X402Error ? err.message : 'paid retry outcome unknown; not retried' }) }
+          } else record!.settle('approved', signatureRequest ? { signature: result } : { tx_hash: result })
+        },
         (err: unknown) => {
           const message = err instanceof Error ? err.message : String(err)
           if (!record) {
@@ -441,17 +469,17 @@ export function createMcpServer(options: McpServerOptions): { handleLine: (line:
     if (record.status === 'pending' && waitMs > 0) {
       let timer: ReturnType<typeof setTimeout> | undefined
       const waits = [record.settled, new Promise((r) => cancelled.addEventListener('abort', r, { once: true }))]
-      // a wait that reaches past expiry ends when the request's expiry timer settles it
-      if (waitMs < record.expiresAt - Date.now()) waits.push(new Promise((r) => { timer = setTimeout(r, waitMs) }))
+      // Approval can cancel request expiry and start a paid retry during this poll. Its wait cap stays independent.
+      waits.push(new Promise((r) => { timer = setTimeout(r, waitMs) }))
       await Promise.race(waits)
       clearTimeout(timer)
     }
     // a fallback for an expiry timer that runs late (a busy process): it only marks expired once the clock has passed expires_at
-    if (record.status === 'pending' && Date.now() >= record.expiresAt) record.settle('expired')
+    if (record.status === 'pending' && !record.retrying && Date.now() >= record.expiresAt) record.settle('expired')
 
-    const { status, tx_hash, signature, error } = record
+    const { status, tx_hash, signature, error, result } = record
     if (status === 'pending') return toolResult({ request_id, review_url: reviewUrl(request_id), status, expires_at: new Date(record.expiresAt).toISOString() })
-    return toolResult({ request_id, status, ...(tx_hash !== undefined && { tx_hash }), ...(signature !== undefined && { signature }), ...(error !== undefined && { error }) })
+    return toolResult({ request_id, status, ...(tx_hash !== undefined && { tx_hash }), ...(signature !== undefined && { signature }), ...(error !== undefined && { error }), ...(result !== undefined && { result }) })
   }
 
   function listPairings(): ToolResult {
@@ -463,6 +491,18 @@ export function createMcpServer(options: McpServerOptions): { handleLine: (line:
   }
 
   const TOOL_HANDLERS: Record<string, (args: Record<string, unknown>, cancelled: AbortSignal) => ToolResult | Promise<ToolResult>> = {
+    x402_fetch: async (args, cancelled) => {
+      const context = contextFrom(args)
+      const input = validateX402Fetch(args)
+      if (typeof args.max_amount !== 'string' || args.max_amount.length > 400 || !/^(0|[1-9][0-9]*)(\.[0-9]+)?$/.test(args.max_amount) || !/[1-9]/.test(args.max_amount)) throw new X402Error('max_amount must be a positive decimal token-unit string')
+      const response = await fetchX402(input, chainOptions)
+      if (response.status !== 402) return toolResult(x402HttpResult(response, false))
+      const pairing = options.loadPairing('evm')
+      if (!pairing) return toolError(NOT_PAIRED.evm)
+      const payment = await prepareX402(response, input.url, args.max_amount, pairing.wallet ?? '', chainOptions)
+      context.x402 = payment.context
+      return submit('evm', undefined, cancelled, (wallet, limits) => wallet.requestSignTypedData({ chain_id: payment.chain_id, typed_data: payment.typed_data, context, ...limits }), true, Math.min(ttl, X402_APPROVAL_MS, payment.expires_at - Date.now()), signature => retryX402(input, payment, signature, chainOptions))
+    },
     request_sign_message: (args, cancelled) => {
       const context = contextFrom(args)
       const from = fromArg(args)
@@ -495,6 +535,7 @@ export function createMcpServer(options: McpServerOptions): { handleLine: (line:
     try {
       return await handler(args, cancelled)
     } catch (err) {
+      if (err instanceof X402Error) return err.offered ? { ...toolResult({ error: err.message, offered: err.offered }), isError: true } : toolError(err.message)
       if (err instanceof ToolInputError || err instanceof InvalidTxError || err instanceof ChainDataError) return toolError(err.message)
       throw err
     }
@@ -583,6 +624,7 @@ function newRecord(request_id: string, expiresAt: number): RequestRecord {
       record.tx_hash = detail.tx_hash
       record.signature = detail.signature
       record.error = detail.error
+      record.result = detail.result
       resolveSettled()
     },
   }

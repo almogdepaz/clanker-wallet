@@ -134,6 +134,13 @@ describe('documented signature requests', () => {
   })
 })
 
+describe('documented x402 payments', () => {
+  it.each(['SKILL.md', 'README.md', 'llms-full.txt'])('%s documents explicit approval, units, protocol limits and retry uncertainty', doc => {
+    const text = read(doc)
+    for (const wording of ['x402_fetch', 'max_amount', 'decimal token units', 'the user signs each payment', 'eip3009 only', 'v1 is not supported', '10-minute approval window', 'one paid retry', 'settlement_pending', 'outcome unknown; not retried', 'server-provided and unverified']) expect(text).toContain(wording)
+  })
+})
+
 describe('documented mcp server', () => {
   const MCP_DOCS = ['SKILL.md', 'README.md', 'llms-full.txt']
   const SERVER_ENTRY = { command: 'npx', args: ['-y', 'clanker-wallet', 'mcp'] }

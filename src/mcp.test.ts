@@ -83,6 +83,127 @@ const btcArgs = { family: 'bitcoin', network: 'testnet', to: BTC_TEST, amount: '
 const chiaArgs = { family: 'chia', network: 'testnet11', to: TXCH, amount: '1000', reason: 'pay' }
 const sentTo = (room: string) => relay.received.filter((m) => m.type === 'message' && m.room === room)
 
+describe('x402 tools', () => {
+  it('refuses malformed structured x402 context before sending a direct sign request', async () => {
+    const h = await human()
+    const wallet = new ClankerWallet()
+    wallet.pair(JSON.stringify({ version: 1, ...evmPairing(h.room) }))
+    await expect(wallet.requestSignMessage({ chain_id: 1, message: 'hello', context: { x402: {} as any }, timeout_ms: 100 })).rejects.toThrow(/x402 context/)
+    expect(h.requests).toEqual([])
+  })
+  it('returns a free HTTP result without pairing or signing, and refuses unsafe input', async () => {
+    const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('free', { headers: { 'content-type': 'text/plain' } }))
+    try {
+      const { call } = server({})
+      expect(await call('x402_fetch', { url: 'https://service.example/free', max_amount: '0.1', reason: 'read data' })).toEqual({ isError: false, body: { status: 200, content_type: 'text/plain', body: 'free', bytes: 4, paid: false } })
+      expect((await call('x402_fetch', { url: 'http://localhost/', max_amount: '0.1', reason: 'read' })).isError).toBe(true)
+      expect(fetch).toHaveBeenCalledTimes(1)
+    } finally { fetch.mockRestore() }
+  })
+  it.each(['success', 'failure'] as const)('caps a poll started before approval while the paid retry awaits %s', async outcome => {
+    vi.useFakeTimers()
+    let approve!: () => void, releaseRetry!: () => void
+    const approval = new Promise<void>(resolve => { approve = resolve })
+    const retry = new Promise<void>(resolve => { releaseRetry = resolve })
+    class ReviewingWallet extends ClankerWallet {
+      override async requestSignTypedData(): Promise<string> {
+        this.emit('request_sent', { request_id: 'wait-cap-request' })
+        await approval
+        return '0x' + 'ab'.repeat(65)
+      }
+    }
+    const wallet = new ReviewingWallet()
+    const url = 'https://service.example/paid'
+    const requirement = { scheme: 'exact', network: 'eip155:8453', amount: '10000', asset: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', payTo: TO, maxTimeoutSeconds: 60, extra: { name: 'USD Coin', version: '2' } }
+    const fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      if (!new Headers(init?.headers).has('payment-signature')) return new Response('{}', { status: 402, headers: { 'payment-required': Buffer.from(JSON.stringify({ x402Version: 2, resource: { url }, accepts: [requirement] })).toString('base64') } })
+      await retry
+      if (outcome === 'failure') throw new Error('HTTP service unavailable')
+      return new Response('paid', { headers: { 'content-type': 'text/plain' } })
+    })
+    const mcp = createMcpServer({ version: 'test', identity: { agent_id: 'test', fingerprint: 'test' }, requestTtlMs: 100,
+      loadPairing: () => ({ pubkey: 'a'.repeat(64), wallet: '0x' + '1'.repeat(40), relay: 'wss://unused', mode: 'encrypted' }),
+      wallet: () => wallet, fetch,
+    })
+    let id = 0
+    const call = async (name: string, args: Record<string, unknown>) => {
+      const response = JSON.parse((await mcp.handleLine(JSON.stringify({ jsonrpc: '2.0', id: ++id, method: 'tools/call', params: { name, arguments: args } })))!)
+      expect(response.error).toBeUndefined()
+      expect(response.result.isError).not.toBe(true)
+      return JSON.parse(response.result.content[0].text)
+    }
+    let poll: Promise<unknown> | undefined
+    try {
+      const sent = await call('x402_fetch', { url, max_amount: '0.01', reason: 'read paid data' })
+      const startedAt = Date.now()
+      let polled: { status: string } | undefined
+      // Start waiting while the request is still unsigned. Its original expiry is earlier than the poll cap.
+      poll = call('get_request', { request_id: sent.request_id, wait_seconds: 0.15 }).then(result => { polled = result; return result })
+      await vi.advanceTimersByTimeAsync(30)
+      expect(polled).toBeUndefined()
+      expect(fetch).toHaveBeenCalledTimes(1)
+      approve()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(fetch).toHaveBeenCalledTimes(2)
+      await vi.advanceTimersByTimeAsync(119)
+      expect(polled).toBeUndefined()
+      await vi.advanceTimersByTimeAsync(1)
+      expect(Date.now() - startedAt).toBe(150)
+      expect(polled?.status).toBe('pending')
+      expect((await call('get_request', { request_id: sent.request_id })).status).toBe('pending')
+      releaseRetry()
+      const final = await call('get_request', { request_id: sent.request_id, wait_seconds: 1 })
+      if (outcome === 'success') expect(final).toMatchObject({ status: 'approved', result: { paid: true, body: 'paid' } })
+      else expect(final).toMatchObject({ status: 'failed', error: expect.stringContaining('HTTP request failed') })
+      expect(await call('get_request', { request_id: sent.request_id })).toEqual(final)
+      expect(fetch).toHaveBeenCalledTimes(2)
+    } finally {
+      releaseRetry()
+      await poll
+      vi.useRealTimers()
+    }
+  })
+  it('retains the final result when an already-started paid retry outlives the approval deadline', async () => {
+    const h = await human(req => ({ request_id: req.request_id, status: 'approved', signature: '0x' + 'ab'.repeat(65) }))
+    const { call } = server({ evm: evmPairing(h.room) })
+    let started!: () => void, release!: () => void
+    const retryStarted = new Promise<void>(r => { started = r })
+    const blocked = new Promise<void>(r => { release = r })
+    const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
+      if (new Headers(init?.headers).has('payment-signature')) { started(); await blocked; return new Response('paid', { headers: { 'content-type': 'text/plain' } }) }
+      return new Response('{}', { status: 402, headers: { 'payment-required': Buffer.from(JSON.stringify({ x402Version: 2, resource: { url: 'https://service.example/paid' }, accepts: [{ scheme: 'exact', network: 'eip155:8453', amount: '10000', asset: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', payTo: TO, maxTimeoutSeconds: 60, extra: { name: 'USD Coin', version: '2' } }] })).toString('base64') } })
+    })
+    try {
+      const sent = await call('x402_fetch', { url: 'https://service.example/paid', max_amount: '0.01', reason: 'read' })
+      await retryStarted
+      vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(Date.now() + 601000)
+      expect((await call('get_request', { request_id: sent.body.request_id })).body.status).toBe('pending')
+      release()
+      expect((await call('get_request', { request_id: sent.body.request_id, wait_seconds: 1 })).body).toMatchObject({ status: 'approved', result: { paid: true } })
+    } finally { release(); vi.useRealTimers(); fetch.mockRestore() }
+  })
+  it('waits for explicit human signature, retries only once and caches the result', async () => {
+    const h = await human(req => ({ request_id: req.request_id, status: 'approved', signature: '0x' + 'ab'.repeat(65) }))
+    const { call } = server({ evm: evmPairing(h.room) })
+    const requirement = { scheme: 'exact', network: 'eip155:8453', amount: '10000', asset: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', payTo: TO, maxTimeoutSeconds: 60, extra: { name: 'USD Coin', version: '2' } }
+    const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
+      if (new Headers(init?.headers).has('payment-signature')) return new Response('paid', { headers: { 'content-type': 'text/plain' } })
+      return new Response('{}', { status: 402, headers: { 'payment-required': Buffer.from(JSON.stringify({ x402Version: 2, resource: { url: 'https://service.example/paid' }, accepts: [requirement] })).toString('base64') } })
+    })
+    try {
+      const sent = await call('x402_fetch', { url: 'https://service.example/paid', max_amount: '0.01', reason: 'read data' })
+      expect(sent.isError).toBe(false)
+      expect(sent.body.status).toBe('pending')
+      const result = await call('get_request', { request_id: sent.body.request_id, wait_seconds: 1 })
+      expect(result.body).toMatchObject({ status: 'approved', result: { paid: true, body: 'paid' } })
+      expect(await call('get_request', { request_id: sent.body.request_id })).toEqual(result)
+      expect(fetch).toHaveBeenCalledTimes(2)
+      expect(h.requests[0]).toMatchObject({ sign: { method: 'eth_signTypedData_v4' }, context: { x402: { amount: '10000' } } })
+      expect(Date.parse(sent.body.expires_at) - Date.now()).toBeLessThanOrEqual(600000)
+    } finally { fetch.mockRestore() }
+  })
+})
+
 describe('signature tools', () => {
   it.each(['request_sign_message', 'request_sign_typed_data'])('%s returns review URL then signature, never tx_hash', async name => {
     const signature = '0x' + 'ab'.repeat(65)
@@ -152,7 +273,7 @@ describe('mcp protocol', () => {
 
   it('lists the tools with object schemas, stating human approval and integer-string amounts', async () => {
     const { result } = await rpc('tools/list')
-    expect(result.tools.map((t: any) => t.name)).toEqual(['request_evm_tx', 'request_transfer', 'request_token_transfer', 'request_sign_message', 'request_sign_typed_data', 'get_request', 'get_balance', 'get_tx_status', 'list_pairings'])
+    expect(result.tools.map((t: any) => t.name)).toEqual(['request_evm_tx', 'request_transfer', 'request_token_transfer', 'request_sign_message', 'request_sign_typed_data', 'x402_fetch', 'get_request', 'get_balance', 'get_tx_status', 'list_pairings'])
     for (const tool of result.tools) expect(tool.inputSchema.type).toBe('object')
     const byName = Object.fromEntries(result.tools.map((t: any) => [t.name, t]))
     for (const name of ['request_evm_tx', 'request_transfer']) {
@@ -190,7 +311,7 @@ describe('mcp protocol', () => {
     const annotations = Object.fromEntries(result.tools.map((t: any) => [t.name, t.annotations]))
     const request = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true }
     const read = { readOnlyHint: true, openWorldHint: false }
-    expect(annotations).toEqual({ request_evm_tx: request, request_transfer: request, request_token_transfer: request, request_sign_message: request, request_sign_typed_data: request, get_request: read, get_balance: { ...read, openWorldHint: true }, get_tx_status: { ...read, openWorldHint: true }, list_pairings: read })
+    expect(annotations).toEqual({ request_evm_tx: request, request_transfer: request, request_token_transfer: request, request_sign_message: request, request_sign_typed_data: request, x402_fetch: request, get_request: read, get_balance: { ...read, openWorldHint: true }, get_tx_status: { ...read, openWorldHint: true }, list_pairings: read })
   })
 })
 
