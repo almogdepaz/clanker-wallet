@@ -289,6 +289,16 @@ describe('mcp protocol', () => {
     expect(result.tools).toEqual(MCP_TOOLS)
   })
 
+  it('tells the assistant to hand review_url to the user, never to open it in its own browser', async () => {
+    const { result } = await rpc('tools/list')
+    const linking = result.tools.filter((t: any) => t.description.includes('review_url'))
+    expect(linking.map((t: any) => t.name)).toEqual(['request_evm_tx', 'request_transfer', 'request_token_transfer', 'request_sign_message', 'request_sign_typed_data', 'x402_fetch'])
+    for (const tool of linking) expect(tool.description, tool.name).toContain('never open it yourself')
+    const { result: init } = await rpc('initialize', { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 't', version: '1' } })
+    expect(init.instructions).toContain('x402_fetch')
+    expect(init.instructions).toContain('never open it yourself')
+  })
+
   it('offers an optional from (the wallet to send from) on both request tools, described the same way', async () => {
     const { result } = await rpc('tools/list')
     const byName = Object.fromEntries(result.tools.map((t: any) => [t.name, t]))
