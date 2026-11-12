@@ -80,7 +80,7 @@ export const MCP_TOOLS = [
     name: 'request_evm_tx',
     description: 'Ask the human to send an EVM transaction (ETH or a contract call) from their own wallet. ' +
       'Nothing is signed here: the human approves every request on their own device, or rejects it. ' +
-      'Returns { request_id, review_url } once delivered; show review_url to the user, then call get_request for the outcome. ' +
+      'Returns { request_id, review_url } once delivered; show review_url to the user as a link (never open it yourself: only their browser can show the request), then call get_request for the outcome. ' +
       'value is an integer string in wei (1 ETH = "1000000000000000000"), no decimals.',
     inputSchema: {
       type: 'object',
@@ -100,7 +100,7 @@ export const MCP_TOOLS = [
     name: 'request_transfer',
     description: 'Ask the human to send bitcoin or chia (XCH) from their own wallet, which builds, signs and broadcasts it. ' +
       'Nothing is signed here: the human approves every request on their own device, or rejects it. ' +
-      'Returns { request_id, review_url } once delivered; show review_url to the user, then call get_request for the outcome. ' +
+      'Returns { request_id, review_url } once delivered; show review_url to the user as a link (never open it yourself: only their browser can show the request), then call get_request for the outcome. ' +
       'amount is an integer string, no decimals: sats for bitcoin (1 BTC = "100000000"), where the wallet sets the fee; ' +
       'mojos for chia (1 XCH = "1000000000000"), with an optional fee in mojos (default "0").',
     inputSchema: {
@@ -127,7 +127,7 @@ export const MCP_TOOLS = [
     description: 'Ask the human to send an EVM token or native coin from their own wallet. ' +
       'The human approves every request on their own device. amount is a human decimal string; never rounded. ' +
       'Use a listed symbol for that chain or pass the contract address; unlisted symbols are refused, never searched. ' +
-      'Omit token (or use the native symbol) for native coin. Returns { request_id, review_url }; show review_url to the user, then call get_request.',
+      'Omit token (or use the native symbol) for native coin. Returns { request_id, review_url }; show review_url to the user as a link (never open it yourself: only their browser can show the request), then call get_request.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -145,7 +145,7 @@ export const MCP_TOOLS = [
   {
     name: 'request_sign_message',
     description: 'Ask the human to sign an EVM message (personal_sign) in their own wallet. ' +
-      'Returns { request_id, review_url }; show review_url to the user, then call get_request for the signature. ' +
+      'Returns { request_id, review_url }; show review_url to the user as a link (never open it yourself: only their browser can show the request), then call get_request for the signature. ' +
       'Signatures can authorize spending (permits): explain why one is needed. Every signature needs human review; eth_sign is not available.',
     inputSchema: {
       type: 'object',
@@ -162,7 +162,7 @@ export const MCP_TOOLS = [
   {
     name: 'request_sign_typed_data',
     description: 'Ask the human to sign parsed EIP-712 typed data (eth_signTypedData_v4) in their own wallet. ' +
-      'Returns { request_id, review_url }; show review_url to the user, then call get_request for the signature. ' +
+      'Returns { request_id, review_url }; show review_url to the user as a link (never open it yourself: only their browser can show the request), then call get_request for the signature. ' +
       'Signatures can authorize spending (permits): explain why one is needed. Every signature needs human review; eth_sign is not available.',
     inputSchema: {
       type: 'object',
@@ -183,7 +183,7 @@ export const MCP_TOOLS = [
   },
   {
     name: 'x402_fetch',
-    description: 'Fetch an HTTPS resource. For x402 v2 exact EVM eip3009 payments, the human signs every payment in their wallet. max_amount is a decimal token-unit ceiling, never an auto-pay budget. Returns a free HTTP result or a pending request with review_url; get_request returns the single paid retry result. No redirects are followed.',
+    description: 'Fetch an HTTPS resource. For x402 v2 exact EVM eip3009 payments, the human signs every payment in their wallet. max_amount is a decimal token-unit ceiling, never an auto-pay budget. Returns a free HTTP result or a pending request with review_url; show review_url to the user as a link (never open it yourself: only their browser can show the request), then get_request returns the single paid retry result. No redirects are followed.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -256,8 +256,9 @@ export const MCP_TOOLS = [
 ]
 
 const INSTRUCTIONS = 'clanker-wallet sends transaction and signature requests to a human, who approves or rejects each one in their own wallet; ' +
-  'you never hold keys. Call list_pairings to see which chains you can use, request_evm_tx, request_transfer, request_token_transfer, request_sign_message or request_sign_typed_data to ask, ' +
-  'and get_request (with wait_seconds) until the request is no longer pending.'
+  'you never hold keys. Call list_pairings to see which chains you can use, request_evm_tx, request_transfer, request_token_transfer, request_sign_message, request_sign_typed_data or x402_fetch to ask, ' +
+  'show the returned review_url to the user as a link (never open it yourself: only their browser can show the request), ' +
+  'and call get_request (with wait_seconds) until the request is no longer pending.'
 
 /** what get_request reports, in the order the docs list them */
 export const REQUEST_STATUSES = ['pending', 'approved', 'rejected', 'failed', 'unknown', 'expired'] as const
